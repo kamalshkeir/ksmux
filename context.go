@@ -32,7 +32,7 @@ func init() {
 	contextPool.New = func() interface{} {
 		return &Context{
 			status: 200,
-			params: Params{},
+			Params: Params{},
 		}
 	}
 }
@@ -40,20 +40,20 @@ func init() {
 type Context struct {
 	http.ResponseWriter
 	*http.Request
-	params Params
+	Params Params
 	status int
 }
 
 func (c *Context) Param(name string) string {
-	return c.params.ByName(name)
+	return c.Params.ByName(name)
 }
 
 func (c *Context) SliceParams() Params {
-	return c.params
+	return c.Params
 }
 
 func (c *Context) reset() {
-	c.params = c.params[:0]
+	c.Params = c.Params[:0]
 	c.status = 200
 	c.Request = nil
 	c.ResponseWriter = nil
@@ -142,7 +142,7 @@ func (c *Context) DeleteCookie(key string) {
 }
 
 func (c *Context) MatchedPath() string {
-	return c.params.ByName(MatchedRoutePathParam)
+	return c.Params.ByName(MatchedRoutePathParam)
 }
 
 // AddHeader Add append a header value to key if exist

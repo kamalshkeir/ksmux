@@ -407,9 +407,9 @@ func (r *Router) Handle(method, path string, handler Handler) {
 // request handler.
 func (r *Router) HandlerFunc(method, path string, handler http.HandlerFunc) {
 	r.Handle(method, path, func(c *Context) {
-		if len(c.params) > 0 {
+		if len(c.Params) > 0 {
 			ctx := c.Request.Context()
-			ctx = context.WithValue(ctx, ctxKey, c.params)
+			ctx = context.WithValue(ctx, ctxKey, c.Params)
 			c.Request = c.Request.WithContext(ctx)
 		}
 		handler.ServeHTTP(c.ResponseWriter, c.Request)
@@ -421,7 +421,7 @@ func (handler Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := contextPool.Get().(*Context)
 	ctx.ResponseWriter = w
 	ctx.Request = r
-	ctx.params = GetParamsFromCtx(r.Context())
+	ctx.Params = GetParamsFromCtx(r.Context())
 	handler(ctx)
 	ctx.reset()
 	contextPool.Put(ctx)
@@ -524,7 +524,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			c.ResponseWriter = w
 			c.Request = req
 			if ps != nil {
-				c.params = *ps
+				c.Params = *ps
 				handler(c)
 				r.putParams(ps)
 				c.reset()

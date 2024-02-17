@@ -73,7 +73,7 @@ func (r *Router) putParams(ps *Params) {
 
 func (r *Router) saveMatchedRoutePath(path string, handler Handler) Handler {
 	return func(c *Context) {
-		ps := c.params
+		ps := c.Params
 		if ps == nil {
 			psp := r.getParams()
 			ps = (*psp)[0:1]
@@ -81,7 +81,7 @@ func (r *Router) saveMatchedRoutePath(path string, handler Handler) Handler {
 			handler(c)
 			r.putParams(psp)
 		} else {
-			c.params = append(ps, Param{Key: MatchedRoutePathParam, Value: path})
+			c.Params = append(ps, Param{Key: MatchedRoutePathParam, Value: path})
 			handler(c)
 		}
 	}
