@@ -37,6 +37,7 @@ var (
 	DocsEntryFile         = "kmuxdocs/kmuxdocs.go"
 	OnDocsGenerationReady = func() {}
 	withDocs              = false
+	corsEnabled           = false
 	swagFound             = false
 	generateSwaggerJson   = false
 	generateGoComments    = true

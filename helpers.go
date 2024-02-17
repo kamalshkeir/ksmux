@@ -98,19 +98,19 @@ func (r *Router) recv(w http.ResponseWriter, req *http.Request) {
 // If the path was found, it returns the handler function and the path parameter
 // values. Otherwise the third return value indicates whether a redirection to
 // the same path with an extra / without the trailing slash should be performed.
-func (r *Router) Lookup(method, path string) (Handler, Params, bool) {
+func (r *Router) Lookup(method, path string) (Handler, Params, bool, string) {
 	if root := r.trees[method]; root != nil {
-		handler, ps, tsr := root.getHandler(path, r.getParams)
+		handler, ps, tsr, origines := root.getHandler(path, r.getParams)
 		if handler == nil {
 			r.putParams(ps)
-			return nil, nil, tsr
+			return nil, nil, tsr, origines
 		}
 		if ps == nil {
-			return handler, nil, tsr
+			return handler, nil, tsr, origines
 		}
-		return handler, *ps, tsr
+		return handler, *ps, tsr, origines
 	}
-	return nil, nil, false
+	return nil, nil, false, ""
 }
 
 func (r *Router) allowed(path, reqMethod string) (allow string) {
@@ -136,7 +136,7 @@ func (r *Router) allowed(path, reqMethod string) (allow string) {
 				continue
 			}
 
-			handler, _, _ := r.trees[method].getHandler(path, nil)
+			handler, _, _, _ := r.trees[method].getHandler(path, nil)
 			if handler != nil {
 				// Add request method to list of allowed methods
 				allowed = append(allowed, method)

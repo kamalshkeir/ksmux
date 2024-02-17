@@ -90,6 +90,41 @@ func Logs(callback ...func(method, path, remote string, status int, took time.Du
 	}
 }
 
+var Cors = func(allowed ...string) func(http.Handler) http.Handler {
+	corsEnabled = true
+	if len(allowed) == 0 {
+		allowed = append(allowed, "*")
+	}
+	for i := range allowed {
+		if allowed[i] == "*" {
+			continue
+		}
+		allowed[i] = strings.ReplaceAll(allowed[i], "localhost", "127.0.0.1")
+		if !strings.HasPrefix(allowed[i], "http") {
+			allowed[i] = "http://" + allowed[i]
+		}
+	}
+	return func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if allowed[0] == "*" {
+				w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+			} else {
+				w.Header().Set("Access-Control-Allow-Origin", allowed[0])
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "*")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Headers", "*")
+			if r.Method == "OPTIONS" {
+				w.Header().Set("Access-Control-Allow-Headers", "Access-Control-Allow-Headers, Origin, Accept, X-Requested-With, Content-Type, Access-Control-Request-Method, Access-Control-Request-Headers, X-Korm, Authorization, Token, X-Token")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			// Next
+			h.ServeHTTP(w, r)
+		})
+	}
+}
+
 type StatusRecorder struct {
 	http.ResponseWriter
 	Status int

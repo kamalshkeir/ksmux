@@ -17,10 +17,11 @@ import (
 )
 
 type Route struct {
-	Method  string
-	Pattern string
-	Handler Handler
-	Docs    *DocsRoute
+	Method   string
+	Pattern  string
+	Origines string
+	Handler  Handler
+	Docs     *DocsRoute
 }
 
 var DocsGeneralDefaults = DocsGeneralInfo{

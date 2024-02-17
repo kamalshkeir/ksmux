@@ -25,6 +25,7 @@ const (
 type node struct {
 	path     string
 	indexes  string
+	origines string
 	handler  Handler
 	children []*node
 	isWild   bool
@@ -52,13 +53,13 @@ func (n *node) incrementPrio(pos int) int {
 
 // addPath adds a node with the given handler to the path.
 // Not concurrency-safe!
-func (n *node) addPath(path string, handler Handler) {
+func (n *node) addPath(path string, handler Handler, origines ...string) {
 	fullPath := path
 	n.priority++
 
 	// Empty tree
 	if n.path == "" && n.indexes == "" {
-		n.insertChild(path, fullPath, handler)
+		n.insertChild(path, fullPath, handler, origines...)
 		n.nType = root
 		return
 	}
@@ -79,6 +80,7 @@ walk:
 				indexes:  n.indexes,
 				children: n.children,
 				handler:  n.handler,
+				origines: strings.Join(origines, ","),
 				priority: n.priority - 1,
 			}
 
@@ -144,7 +146,7 @@ walk:
 				n.incrementPrio(len(n.indexes) - 1)
 				n = child
 			}
-			n.insertChild(path, fullPath, handler)
+			n.insertChild(path, fullPath, handler, origines...)
 			return
 		}
 
@@ -153,12 +155,13 @@ walk:
 			klog.Printf("rdanother handler is already registered for this path '%s'\n", fullPath)
 			os.Exit(1)
 		}
+		n.origines = strings.Join(origines, ",")
 		n.handler = handler
 		return
 	}
 }
 
-func (n *node) insertChild(path, fullPath string, handler Handler) {
+func (n *node) insertChild(path, fullPath string, handler Handler, origines ...string) {
 	for {
 		// Find prefix until first wildcard
 		wildcard, i, valid := findPathWildcard(path)
@@ -215,6 +218,7 @@ func (n *node) insertChild(path, fullPath string, handler Handler) {
 			}
 
 			// Otherwise we're done. Insert the handler in the new leaf
+			n.origines = strings.Join(origines, ",")
 			n.handler = handler
 			return
 		}
@@ -254,6 +258,7 @@ func (n *node) insertChild(path, fullPath string, handler Handler) {
 			path:     path[i:],
 			nType:    catchAll,
 			handler:  handler,
+			origines: strings.Join(origines, ","),
 			priority: 1,
 		}
 		n.children = []*node{child}
@@ -262,6 +267,7 @@ func (n *node) insertChild(path, fullPath string, handler Handler) {
 	}
 
 	// If no wildcard was found, simply insert the path and handler
+	n.origines = strings.Join(origines, ",")
 	n.path = path
 	n.handler = handler
 }
@@ -271,7 +277,7 @@ func (n *node) insertChild(path, fullPath string, handler Handler) {
 // If no handler can be found, a TSR (trailing slash redirect) recommendation is
 // made if a handler exists with an extra (without the) trailing slash for the
 // given path.
-func (n *node) getHandler(path string, params func() *Params) (handler Handler, ps *Params, tsr bool) {
+func (n *node) getHandler(path string, params func() *Params) (handler Handler, ps *Params, tsr bool, origines string) {
 walk: // Outer loop for walking the tree
 	for {
 		prefix := n.path
@@ -295,6 +301,7 @@ walk: // Outer loop for walking the tree
 					// We can recommend to redirect to the same URL without a
 					// trailing slash if a leaf exists for that path.
 					tsr = (path == "/" && n.handler != nil)
+					origines = n.origines
 					return
 				}
 
@@ -332,10 +339,12 @@ walk: // Outer loop for walking the tree
 
 						// ... but we can't
 						tsr = (len(path) == end+1)
+						origines = n.origines
 						return
 					}
 
 					if handler = n.handler; handler != nil {
+						origines = n.origines
 						return
 					} else if len(n.children) == 1 {
 						// No handler found. Check if a handler for this path + a
@@ -343,7 +352,7 @@ walk: // Outer loop for walking the tree
 						n = n.children[0]
 						tsr = (n.path == "/" && n.handler != nil) || (n.path == "" && n.indexes == "/")
 					}
-
+					origines = n.origines
 					return
 
 				case catchAll:
@@ -360,7 +369,7 @@ walk: // Outer loop for walking the tree
 							Value: path,
 						}
 					}
-
+					origines = n.origines
 					handler = n.handler
 					return
 
@@ -373,6 +382,7 @@ walk: // Outer loop for walking the tree
 			// We should have reached the node containing the handler.
 			// Check if this node has a handler registered.
 			if handler = n.handler; handler != nil {
+				origines = n.origines
 				return
 			}
 
@@ -381,11 +391,13 @@ walk: // Outer loop for walking the tree
 			// additional trailing slash
 			if path == "/" && n.isWild && n.nType != root {
 				tsr = true
+				origines = n.origines
 				return
 			}
 
 			if path == "/" && n.nType == static {
 				tsr = true
+				origines = n.origines
 				return
 			}
 
@@ -396,9 +408,11 @@ walk: // Outer loop for walking the tree
 					n = n.children[i]
 					tsr = (len(n.path) == 1 && n.handler != nil) ||
 						(n.nType == catchAll && n.children[0].handler != nil)
+					origines = n.origines
 					return
 				}
 			}
+			origines = n.origines
 			return
 		}
 
@@ -407,6 +421,7 @@ walk: // Outer loop for walking the tree
 		tsr = (path == "/") ||
 			(len(prefix) == len(path)+1 && prefix[len(path)] == '/' &&
 				path == prefix[:len(prefix)-1] && n.handler != nil)
+		origines = n.origines
 		return
 	}
 }

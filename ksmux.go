@@ -144,14 +144,14 @@ func New() *Router {
 }
 
 // Get is a shortcut for router.Handle(http.MethodGet, path, handler)
-func (r *Router) Get(path string, handler Handler) {
+func (r *Router) Get(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	r.Handle(http.MethodGet, path, handler)
+	return r.Handle(http.MethodGet, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Get(pattern string, handler Handler) {
+func (gr *GroupRouter) Get(pattern string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(pattern, "/") {
 		pattern = "/" + pattern
 	}
@@ -167,18 +167,18 @@ func (gr *GroupRouter) Get(pattern string, handler Handler) {
 	} else {
 		h = handler
 	}
-	gr.Router.Handle(http.MethodGet, gr.Group+pattern, handler)
+	return gr.Router.Handle(http.MethodGet, gr.Group+pattern, handler, origines...)
 }
 
 // Head is a shortcut for router.Handle(http.MethodHead, path, handler)
-func (r *Router) Head(path string, handler Handler) {
+func (r *Router) Head(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	r.Handle(http.MethodHead, path, handler)
+	return r.Handle(http.MethodHead, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Head(pattern string, handler Handler) {
+func (gr *GroupRouter) Head(pattern string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(pattern, "/") {
 		pattern = "/" + pattern
 	}
@@ -194,18 +194,18 @@ func (gr *GroupRouter) Head(pattern string, handler Handler) {
 	} else {
 		h = handler
 	}
-	gr.Router.Handle(http.MethodHead, gr.Group+pattern, handler)
+	return gr.Router.Handle(http.MethodHead, gr.Group+pattern, handler, origines...)
 }
 
 // Options is a shortcut for router.Handle(http.MethodOptions, path, handler)
-func (r *Router) Options(path string, handler Handler) {
+func (r *Router) Options(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	r.Handle(http.MethodOptions, path, handler)
+	return r.Handle(http.MethodOptions, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Options(pattern string, handler Handler) {
+func (gr *GroupRouter) Options(pattern string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(pattern, "/") {
 		pattern = "/" + pattern
 	}
@@ -221,18 +221,18 @@ func (gr *GroupRouter) Options(pattern string, handler Handler) {
 	} else {
 		h = handler
 	}
-	gr.Router.Handle(http.MethodOptions, gr.Group+pattern, handler)
+	return gr.Router.Handle(http.MethodOptions, gr.Group+pattern, handler, origines...)
 }
 
 // Post is a shortcut for router.Handle(http.MethodPost, path, handler)
-func (r *Router) Post(path string, handler Handler) {
+func (r *Router) Post(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	r.Handle(http.MethodPost, path, handler)
+	return r.Handle(http.MethodPost, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Post(pattern string, handler Handler) {
+func (gr *GroupRouter) Post(pattern string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(pattern, "/") {
 		pattern = "/" + pattern
 	}
@@ -248,18 +248,18 @@ func (gr *GroupRouter) Post(pattern string, handler Handler) {
 	} else {
 		h = handler
 	}
-	gr.Router.Handle(http.MethodPost, gr.Group+pattern, handler)
+	return gr.Router.Handle(http.MethodPost, gr.Group+pattern, handler, origines...)
 }
 
 // Put is a shortcut for router.Handle(http.MethodPut, path, handler)
-func (r *Router) Put(path string, handler Handler) {
+func (r *Router) Put(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	r.Handle(http.MethodPut, path, handler)
+	return r.Handle(http.MethodPut, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Put(pattern string, handler Handler) {
+func (gr *GroupRouter) Put(pattern string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(pattern, "/") {
 		pattern = "/" + pattern
 	}
@@ -275,18 +275,18 @@ func (gr *GroupRouter) Put(pattern string, handler Handler) {
 	} else {
 		h = handler
 	}
-	gr.Router.Handle(http.MethodPut, gr.Group+pattern, handler)
+	return gr.Router.Handle(http.MethodPut, gr.Group+pattern, handler, origines...)
 }
 
 // Patch is a shortcut for router.Handle(http.MethodPatch, path, handler)
-func (r *Router) Patch(path string, handler Handler) {
+func (r *Router) Patch(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	r.Handle(http.MethodPatch, path, handler)
+	return r.Handle(http.MethodPatch, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Patch(pattern string, handler Handler) {
+func (gr *GroupRouter) Patch(pattern string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(pattern, "/") {
 		pattern = "/" + pattern
 	}
@@ -302,18 +302,18 @@ func (gr *GroupRouter) Patch(pattern string, handler Handler) {
 	} else {
 		h = handler
 	}
-	gr.Router.Handle(http.MethodPatch, gr.Group+pattern, handler)
+	return gr.Router.Handle(http.MethodPatch, gr.Group+pattern, handler, origines...)
 }
 
 // Delete is a shortcut for router.Handle(http.MethodDelete, path, handler)
-func (r *Router) Delete(path string, handler Handler) {
+func (r *Router) Delete(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	r.Handle(http.MethodDelete, path, handler)
+	return r.Handle(http.MethodDelete, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Delete(pattern string, handler Handler) {
+func (gr *GroupRouter) Delete(pattern string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(pattern, "/") {
 		pattern = "/" + pattern
 	}
@@ -329,7 +329,7 @@ func (gr *GroupRouter) Delete(pattern string, handler Handler) {
 	} else {
 		h = handler
 	}
-	gr.Router.Handle(http.MethodDelete, gr.Group+pattern, handler)
+	return gr.Router.Handle(http.MethodDelete, gr.Group+pattern, handler, origines...)
 }
 
 // Handle registers a new request handler with the given path and method.
@@ -340,23 +340,29 @@ func (gr *GroupRouter) Delete(pattern string, handler Handler) {
 // This function is intended for bulk loading and to allow the usage of less
 // frequently used, non-standardized or custom methods (e.g. for internal
 // communication with a proxy).
-func (r *Router) Handle(method, path string, handler Handler) {
+func (r *Router) Handle(method, path string, handler Handler, origines ...string) *Route {
 	varsCount := uint16(0)
 
 	if method == "" {
 		klog.Printf("rdmethod cannot be empty for %s\n", path)
-		return
+		return nil
 	}
 	if handler == nil {
 		klog.Printf("rdmissing handler for %s\n", path)
-		return
+		return nil
 	}
 
 	if r.SaveMatchedPath {
 		varsCount++
 		handler = r.saveMatchedRoutePath(path, handler)
 	}
-
+	route := Route{}
+	route.Method = method
+	route.Pattern = path
+	route.Handler = handler
+	if corsEnabled && len(origines) > 0 {
+		route.Origines = strings.Join(origines, ",")
+	}
 	if withDocs && !strings.Contains(path, "*") && method != "WS" && method != "SSE" {
 		d := &DocsRoute{
 			Pattern:     path,
@@ -367,12 +373,8 @@ func (r *Router) Handle(method, path string, handler Handler) {
 			Produce:     "json",
 			Params:      []string{},
 		}
-		docsPatterns = append(docsPatterns, &Route{
-			Method:  method,
-			Pattern: path,
-			Handler: handler,
-			Docs:    d,
-		})
+		route.Docs = d
+		docsPatterns = append(docsPatterns, &route)
 	}
 
 	if r.trees == nil {
@@ -387,7 +389,7 @@ func (r *Router) Handle(method, path string, handler Handler) {
 		r.globalAllowed = r.allowed("*", "")
 	}
 
-	root.addPath(path, handler)
+	root.addPath(path, handler, origines...)
 
 	// Update maxParams
 	if paramsCount := countParams(path); paramsCount+varsCount > r.maxParams {
@@ -401,20 +403,20 @@ func (r *Router) Handle(method, path string, handler Handler) {
 			return &ps
 		}
 	}
+	return &route
 }
 
 // HandlerFunc is an adapter which allows the usage of an http.HandlerFunc as a
 // request handler.
-func (r *Router) HandlerFunc(method, path string, handler http.HandlerFunc) {
-	r.Handle(method, path, func(c *Context) {
+func (r *Router) HandlerFunc(method, path string, handler http.HandlerFunc, origines ...string) *Route {
+	return r.Handle(method, path, func(c *Context) {
 		if len(c.Params) > 0 {
 			ctx := c.Request.Context()
 			ctx = context.WithValue(ctx, ctxKey, c.Params)
 			c.Request = c.Request.WithContext(ctx)
 		}
 		handler.ServeHTTP(c.ResponseWriter, c.Request)
-	},
-	)
+	}, origines...)
 }
 
 func (handler Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -510,6 +512,13 @@ func (router *Router) WithDocs(genJsonDocs bool, genGoDocs ...bool) *Router {
 	return router
 }
 
+// EnableDomainCheck enable only the domain check from ksmux methods Get,Post,... (does not add cors middleware)
+func (router *Router) EnableDomainCheck() {
+	if !corsEnabled {
+		corsEnabled = true
+	}
+}
+
 // ServeHTTP makes the router implement the http.Handler interface.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if r.PanicHandler != nil {
@@ -519,7 +528,14 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	path := req.URL.Path
 
 	if root := r.trees[req.Method]; root != nil {
-		if handler, ps, tsr := root.getHandler(path, r.getParams); handler != nil {
+		if handler, ps, tsr, origines := root.getHandler(path, r.getParams); handler != nil {
+			if corsEnabled && origines != "" && !strings.Contains(origines, "*") && !strings.Contains(origines, req.Header.Get("Origin")) {
+				http.Error(w,
+					http.StatusText(http.StatusForbidden),
+					http.StatusForbidden,
+				)
+				return
+			}
 			c := contextPool.Get().(*Context)
 			c.ResponseWriter = w
 			c.Request = req
