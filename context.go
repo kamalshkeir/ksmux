@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kamalshkeir/kencoding/json"
+	"github.com/kamalshkeir/ksmux/ws"
 
 	"github.com/kamalshkeir/klog"
 )
@@ -46,6 +47,20 @@ type Context struct {
 
 func (c *Context) Param(name string) string {
 	return c.Params.ByName(name)
+}
+
+// Stream send SSE Streaming Response
+func (c *Context) Stream(response string) error {
+	defer c.Flush()
+	_, err := c.ResponseWriter.Write([]byte("data: " + response + "\n\n"))
+	if klog.CheckError(err) {
+		return err
+	}
+	return nil
+}
+
+func (c *Context) UpgradeConnection() (*ws.Conn, error) {
+	return ws.UpgradeConnection(c.ResponseWriter, c.Request, nil)
 }
 
 func (c *Context) SliceParams() Params {
@@ -354,16 +369,6 @@ func (c *Context) SetKey(key string, value any) {
 	c.Request = c.Request.WithContext(ctx)
 }
 
-// Stream send SSE Streaming Response
-func (c *Context) Stream(response string) error {
-	defer c.Flush()
-	_, err := c.ResponseWriter.Write([]byte("data: " + response + "\n\n"))
-	if klog.CheckError(err) {
-		return err
-	}
-	return nil
-}
-
 func (c *Context) Flush() bool {
 	f, ok := c.ResponseWriter.(http.Flusher)
 	if ok {
@@ -414,6 +419,15 @@ func (c *Context) BodyText() string {
 		return ""
 	}
 	return string(b)
+}
+
+func (c *Context) AddSSEHeaders() {
+	controller := http.NewResponseController(c.ResponseWriter)
+	controller.SetReadDeadline(time.Time{})
+	controller.SetWriteDeadline(time.Time{})
+	c.ResponseWriter.Header().Add("Content-Type", "text/event-stream")
+	c.ResponseWriter.Header().Add("Cache-Control", "no-cache")
+	c.ResponseWriter.Header().Add("Connection", "keep-alive")
 }
 
 // Redirect redirect the client to the specified path with a custom code, default status 307
