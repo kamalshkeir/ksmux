@@ -48,11 +48,29 @@ func BasicAuth(kmuxHandlerFunc Handler, user, pass string) Handler {
 	}
 }
 
+func IgnoreLogsEndpoints(pathContain ...string) {
+	if len(pathContain) > 0 {
+		for _, p := range pathContain {
+			found := false
+			for _, s := range ignored {
+				if p == s {
+					found = true
+				}
+			}
+			if !found {
+				ignored = append(ignored, p)
+			}
+		}
+	}
+}
+
 // Logs middleware log requests, and can execute one optional callback on each request
+var ignored = []string{"/metrics", "sw.js", "favicon", "/static/", "/sse/", "/ws/", "/wss/"}
+
 func Logs(callback ...func(method, path, remote string, status int, took time.Duration)) func(http.Handler) http.Handler {
 	return func(handler http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ignored := []string{"/metrics", "sw.js", "favicon", "/static/", "/sse/", "/ws/", "/wss/"}
+
 			for _, ig := range ignored {
 				if strings.Contains(r.URL.Path, ig) {
 					handler.ServeHTTP(w, r)
