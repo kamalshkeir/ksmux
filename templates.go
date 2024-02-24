@@ -141,6 +141,16 @@ func (router *Router) ServeEmbededFile(file []byte, endpoint, contentType string
 	})
 }
 
+func NewFuncMap(funcMap map[string]any) {
+	for k, v := range funcMap {
+		if _, ok := functions[k]; ok {
+			klog.Printf("rdunable to add %s,already exist !\n", k)
+		} else {
+			functions[k] = v
+		}
+	}
+}
+
 func (router *Router) NewFuncMap(funcMap map[string]any) {
 	for k, v := range funcMap {
 		if _, ok := functions[k]; ok {
@@ -168,6 +178,24 @@ var functions = template.FuncMap{
 			}
 		}
 		return false
+	},
+	"mapKV": func(kvs ...any) map[string]any {
+		res := map[string]any{}
+		if len(kvs)%2 != 0 {
+			klog.Printf("rdkvs in mapKV template func is not even: %v with length %d\n", kvs, len(kvs))
+			return res
+		}
+		for i := 0; i < len(kvs); i += 2 {
+			key, ok := kvs[i].(string)
+			if !ok {
+				klog.Printf("rdargument at position %d must be a string (key)\n", i)
+				res["error"] = fmt.Errorf("argument at position %d must be a string (key)", i).Error()
+				return res
+			}
+
+			res[key] = kvs[i+1]
+		}
+		return res
 	},
 	"startWith": func(str string, substrings ...string) bool {
 		for _, substr := range substrings {
