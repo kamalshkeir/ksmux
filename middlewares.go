@@ -22,7 +22,7 @@ func Gzip() func(http.Handler) http.Handler {
 	return gzip.GZIP
 }
 
-func BasicAuth(kmuxHandlerFunc Handler, user, pass string) Handler {
+func BasicAuth(ksmuxHandlerFunc Handler, user, pass string) Handler {
 	return func(c *Context) {
 		username, password, ok := c.Request.BasicAuth()
 		if ok {
@@ -39,7 +39,7 @@ func BasicAuth(kmuxHandlerFunc Handler, user, pass string) Handler {
 			passwordMatch := (subtle.ConstantTimeCompare(passwordHash[:], expectedPasswordHash[:]) == 1)
 
 			if usernameMatch && passwordMatch {
-				kmuxHandlerFunc(c)
+				ksmuxHandlerFunc(c)
 				return
 			}
 		}

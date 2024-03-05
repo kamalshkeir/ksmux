@@ -131,7 +131,7 @@ func (r *Route) Produce(produce string) *Route {
 	return r
 }
 
-// In must be like "name  in  typePath  required  'desc'" or you can use kmux.DocsIn.String() method
+// In must be like "name  in  typePath  required  'desc'" or you can use ksmux.DocsIn.String() method
 func (r *Route) In(docsParam ...string) *Route {
 	if r.Docs == nil {
 		klog.Printf("rdmissing app.WithDocs before\n")
@@ -145,7 +145,7 @@ func (r *Route) In(docsParam ...string) *Route {
 	return r
 }
 
-// Out must be like "200  {object}/{array}/{string}  app1.Account/string  'okifstring'" or you can use kmux.DocsOut.String() method
+// Out must be like "200  {object}/{array}/{string}  app1.Account/string  'okifstring'" or you can use ksmux.DocsOut.String() method
 func (r *Route) Out(sucessResponse string, failureResponses ...string) *Route {
 	if r.Docs == nil {
 		klog.Printf("rdmissing app.WithDocs before\n")
@@ -187,7 +187,7 @@ func GenerateJsonDocs(entryDocsFile ...string) {
 }
 
 func GenerateGoDocsComments(pkgName ...string) {
-	pkg := "kmuxdocs"
+	pkg := "ksmuxdocs"
 	if len(pkgName) > 0 {
 		pkg = pkgName[0]
 	}
@@ -202,7 +202,7 @@ func GenerateGoDocsComments(pkgName ...string) {
 			return
 		}
 		defer file.Close()
-		_, err = file.WriteString(fmt.Sprintf(kmuxdocsTypes, "`json:\"is_admin\"`", "`json:\"created_at\"`"))
+		_, err = file.WriteString(fmt.Sprintf(ksmuxdocsTypes, "`json:\"is_admin\"`", "`json:\"created_at\"`"))
 		klog.CheckError(err)
 	}
 	file, err := os.Create(DocsEntryFile)
@@ -235,7 +235,7 @@ func GenerateGoDocsComments(pkgName ...string) {
 
 	err = tmplGen.Execute(file, DocsGeneralDefaults)
 	if err != nil {
-		fmt.Println("error generate kmux general defaults:", err)
+		fmt.Println("error generate ksmux general defaults:", err)
 		return
 	}
 
@@ -248,13 +248,13 @@ func GenerateGoDocsComments(pkgName ...string) {
 // @Produce      {{.Docs.Produce}}
 `)
 	if err != nil {
-		fmt.Println("error generate kmux docs:", err)
+		fmt.Println("error generate ksmux docs:", err)
 		return
 	}
 
 	for _, route := range docsPatterns {
 		if err := tmpl.Execute(file, route); err != nil {
-			fmt.Println("error generate kmux docs on execute:", err)
+			fmt.Println("error generate ksmux docs on execute:", err)
 			return
 		}
 
@@ -316,7 +316,7 @@ func (dr DocsOut) String() string {
 	return strings.ReplaceAll(st, "'", "\"")
 }
 
-var kmuxdocsTypes = `package kmuxdocs
+var ksmuxdocsTypes = `package ksmuxdocs
 
 import "time"
 

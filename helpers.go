@@ -180,6 +180,9 @@ func (router *Router) gracefulShutdown() {
 		if err != nil {
 			return err
 		}
+		if limiterUsed {
+			close(limiterQuit)
+		}
 		return nil
 	})
 	if err != nil {

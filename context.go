@@ -257,7 +257,7 @@ func ExecuteRawHtml(rawTemplateName string, data map[string]any) (string, error)
 	}
 	t, ok := rawTemplates.Get(rawTemplateName)
 	if !ok {
-		return "", fmt.Errorf("template not registered. Use kmux.SaveRawHtml before using c.RawHtml")
+		return "", fmt.Errorf("template not registered. Use ksmux.SaveRawHtml before using c.RawHtml")
 	}
 	if err := t.Execute(&buff, data); klog.CheckError(err) {
 		return "", err
@@ -265,7 +265,7 @@ func ExecuteRawHtml(rawTemplateName string, data map[string]any) (string, error)
 	return buff.String(), nil
 }
 
-// NamedRawHtml render rawTemplateName with data using go engine, make sure to save the html using kmux.SaveRawHtml outside the handler
+// NamedRawHtml render rawTemplateName with data using go engine, make sure to save the html using ksmux.SaveRawHtml outside the handler
 func (c *Context) NamedRawHtml(rawTemplateName string, data map[string]any) error {
 	var buff bytes.Buffer
 	if data == nil {
@@ -279,7 +279,7 @@ func (c *Context) NamedRawHtml(rawTemplateName string, data map[string]any) erro
 	}
 	t, ok := rawTemplates.Get(rawTemplateName)
 	if !ok {
-		return fmt.Errorf("template not registered. Use kmux.SaveRawHtml before using c.RawHtml")
+		return fmt.Errorf("template not registered. Use ksmux.SaveRawHtml before using c.RawHtml")
 	}
 
 	if err := t.Execute(&buff, data); klog.CheckError(err) {
@@ -297,7 +297,7 @@ func (c *Context) NamedRawHtml(rawTemplateName string, data map[string]any) erro
 	return nil
 }
 
-// NamedRawHtml render rawTemplateName with data using go engine, make sure to save the html using kmux.SaveRawHtml outside the handler
+// NamedRawHtml render rawTemplateName with data using go engine, make sure to save the html using ksmux.SaveRawHtml outside the handler
 func (c *Context) RawHtml(rawTemplate string, data map[string]any) error {
 	var buff bytes.Buffer
 	if data == nil {

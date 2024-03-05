@@ -7,7 +7,6 @@ package ksmux
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -464,15 +463,14 @@ func (router *Router) WithPprof(path ...string) {
 	}
 	handler := func(c *Context) {
 		ty := c.Param("type")
+		ty = strings.TrimPrefix(ty, "/")
+		ty = strings.TrimSuffix(ty, "/")
 		switch ty {
 		case "pprof", "":
 			pprof.Index(c.ResponseWriter, c.Request)
 			return
 		case "profile":
 			pprof.Profile(c.ResponseWriter, c.Request)
-			return
-		case "trace":
-			pprof.Trace(c.ResponseWriter, c.Request)
 			return
 		default:
 			pprof.Handler(ty).ServeHTTP(c.ResponseWriter, c.Request)
@@ -495,7 +493,7 @@ func (router *Router) WithMetrics(httpHandler http.Handler, path ...string) {
 	})
 }
 
-// WithDocs check and install swagger, and generate json and go docs at the end , after the server run, you can use kmux.OnDocsGenerationReady()
+// WithDocs check and install swagger, and generate json and go docs at the end , after the server run, you can use ksmux.OnDocsGenerationReady()
 // genGoDocs default to true if genJsonDocs
 func (router *Router) WithDocs(genJsonDocs bool, genGoDocs ...bool) *Router {
 	withDocs = true
@@ -655,7 +653,7 @@ func (router *Router) Run(addr string) {
 				ADDRESS = HOST + addr
 			}
 		} else {
-			fmt.Println("error: server address not valid")
+			klog.Printf("rderror: server address not valid\n")
 			return
 		}
 	}
@@ -704,7 +702,7 @@ func (router *Router) RunTLS(addr, cert, certKey string) {
 				ADDRESS = HOST + addr
 			}
 		} else {
-			fmt.Println("error: server address not valid")
+			klog.Printf("rderror: server address not valid\n")
 			return
 		}
 	}

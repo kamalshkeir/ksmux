@@ -34,7 +34,7 @@ var (
 	beforeRenderHtmlSetted = false
 	// docs
 	DocsOutJson           = "."
-	DocsEntryFile         = "kmuxdocs/kmuxdocs.go"
+	DocsEntryFile         = "ksmuxdocs/ksmuxdocs.go"
 	OnDocsGenerationReady = func() {}
 	withDocs              = false
 	corsEnabled           = false

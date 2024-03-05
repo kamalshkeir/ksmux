@@ -5,6 +5,7 @@
 package ksmux
 
 import (
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -13,7 +14,7 @@ import (
 	"github.com/kamalshkeir/klog"
 )
 
-func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.ReverseProxy, url *url.URL, reverseProxyRoutePrefix string) {
+func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.ReverseProxy, url *url.URL) {
 	req.Host = url.Host
 	req.URL.Host = url.Host
 	req.URL.Scheme = url.Scheme
@@ -22,10 +23,14 @@ func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.R
 	proxy.ServeHTTP(resp, req)
 }
 
-func proxyMid(router *Router, proxy *httputil.ReverseProxy, url *url.URL, reverseProxyRoutePrefix string) func(http.Handler) http.Handler {
+func proxyMid() func(http.Handler) http.Handler {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			host := strings.TrimSuffix(r.Host, ":"+PORT)
+			host, _, err := net.SplitHostPort(r.Host)
+			if klog.CheckError(err) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			if v, ok := proxies.Get(host); ok {
 				if vv, ok := v.(*Router); ok {
 					for _, mid := range vv.middlewares {
@@ -62,34 +67,34 @@ func (router *Router) ReverseProxy(host, toURL string) (newRouter *Router) {
 	if !proxyUsed {
 		proxyUsed = true
 		if len(router.middlewares) > 0 {
-			router.middlewares = append([]func(http.Handler) http.Handler{proxyMid(router, proxy, urll, host)}, router.middlewares...)
+			router.middlewares = append([]func(http.Handler) http.Handler{proxyMid()}, router.middlewares...)
 		} else {
-			router.middlewares = append(router.middlewares, proxyMid(router, proxy, urll, host))
+			router.middlewares = append(router.middlewares, proxyMid())
 		}
 	}
 	newRouter = New()
 	_ = proxies.Set(host, newRouter)
 
 	newRouter.Get("/*anyrp", func(c *Context) {
-		proxyHandler(c.Request, c.ResponseWriter, proxy, urll, host)
+		proxyHandler(c.Request, c.ResponseWriter, proxy, urll)
 	})
 	newRouter.Post("/*anyrp", func(c *Context) {
-		proxyHandler(c.Request, c.ResponseWriter, proxy, urll, host)
+		proxyHandler(c.Request, c.ResponseWriter, proxy, urll)
 	})
 	newRouter.Patch("/*anyrp", func(c *Context) {
-		proxyHandler(c.Request, c.ResponseWriter, proxy, urll, host)
+		proxyHandler(c.Request, c.ResponseWriter, proxy, urll)
 	})
 	newRouter.Put("/*anyrp", func(c *Context) {
-		proxyHandler(c.Request, c.ResponseWriter, proxy, urll, host)
+		proxyHandler(c.Request, c.ResponseWriter, proxy, urll)
 	})
 	newRouter.Delete("/*anyrp", func(c *Context) {
-		proxyHandler(c.Request, c.ResponseWriter, proxy, urll, host)
+		proxyHandler(c.Request, c.ResponseWriter, proxy, urll)
 	})
 	newRouter.Options("/*anyrp", func(c *Context) {
-		proxyHandler(c.Request, c.ResponseWriter, proxy, urll, host)
+		proxyHandler(c.Request, c.ResponseWriter, proxy, urll)
 	})
 	newRouter.Head("/*anyrp", func(c *Context) {
-		proxyHandler(c.Request, c.ResponseWriter, proxy, urll, host)
+		proxyHandler(c.Request, c.ResponseWriter, proxy, urll)
 	})
 	return newRouter
 }
