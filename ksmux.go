@@ -722,7 +722,7 @@ func (router *Router) RunTLS(addr, cert, certKey string) {
 		DocsGeneralDefaults.Host = ADDRESS
 		for i := len(docsPatterns) - 1; i >= 0; i-- {
 			route := docsPatterns[i]
-			if route.Docs == nil || route.Docs.Triggered || route.Method == "SSE" || route.Method == "WS" {
+			if route.Docs == nil || !route.Docs.Triggered {
 				docsPatterns = append(docsPatterns[:i], docsPatterns[i+1:]...)
 			}
 		}
@@ -790,7 +790,7 @@ func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
 		DocsGeneralDefaults.Host = ADDRESS
 		for i := len(docsPatterns) - 1; i >= 0; i-- {
 			route := docsPatterns[i]
-			if route.Docs == nil || route.Docs.Triggered || route.Method == "SSE" || route.Method == "WS" {
+			if route.Docs == nil || !route.Docs.Triggered {
 				docsPatterns = append(docsPatterns[:i], docsPatterns[i+1:]...)
 			}
 		}
