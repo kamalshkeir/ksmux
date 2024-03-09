@@ -674,7 +674,7 @@ func (router *Router) Run(addr string) {
 		DocsGeneralDefaults.Host = ADDRESS
 		for i := len(docsPatterns) - 1; i >= 0; i-- {
 			route := docsPatterns[i]
-			if route.Docs == nil || route.Docs.Triggered || route.Method == "SSE" || route.Method == "WS" {
+			if route.Docs == nil || !route.Docs.Triggered {
 				docsPatterns = append(docsPatterns[:i], docsPatterns[i+1:]...)
 			}
 		}
