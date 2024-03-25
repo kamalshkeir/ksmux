@@ -68,10 +68,11 @@ func Limiter(conf *ConfigLimiter) func(http.Handler) http.Handler {
 		for {
 			select {
 			case <-ticker.C:
-				limited.Range(func(key string, value *limiterClient) {
+				limited.Range(func(key string, value *limiterClient) bool {
 					if time.Since(value.lastSeen) > conf.BlockDuration {
 						go limited.Delete(key)
 					}
+					return true
 				})
 			case <-limiterQuit:
 				ticker.Stop()

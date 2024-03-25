@@ -217,8 +217,9 @@ func (c *Context) Html(template_name string, data map[string]any) {
 	}
 	data["Request"] = c.Request
 	if beforeRenderHtmlSetted {
-		beforeRenderHtml.Range(func(key string, value func(reqCtx context.Context, data *map[string]any)) {
+		beforeRenderHtml.Range(func(key string, value func(reqCtx context.Context, data *map[string]any)) bool {
 			value(c.Request.Context(), &data)
+			return true
 		})
 	}
 
@@ -273,8 +274,9 @@ func (c *Context) NamedRawHtml(rawTemplateName string, data map[string]any) erro
 	}
 	data["Request"] = c.Request
 	if beforeRenderHtmlSetted {
-		beforeRenderHtml.Range(func(key string, value func(reqCtx context.Context, data *map[string]any)) {
+		beforeRenderHtml.Range(func(key string, value func(reqCtx context.Context, data *map[string]any)) bool {
 			value(c.Request.Context(), &data)
+			return true
 		})
 	}
 	t, ok := rawTemplates.Get(rawTemplateName)
@@ -305,8 +307,9 @@ func (c *Context) RawHtml(rawTemplate string, data map[string]any) error {
 	}
 	data["Request"] = c.Request
 	if beforeRenderHtmlSetted {
-		beforeRenderHtml.Range(func(key string, value func(reqCtx context.Context, data *map[string]any)) {
+		beforeRenderHtml.Range(func(key string, value func(reqCtx context.Context, data *map[string]any)) bool {
 			value(c.Request.Context(), &data)
+			return true
 		})
 	}
 	t, err := template.New("rawww").Funcs(functions).Parse(rawTemplate)
