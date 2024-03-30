@@ -5,7 +5,7 @@ go 1.21
 require (
 	github.com/kamalshkeir/kencoding v0.0.1
 	github.com/kamalshkeir/kmap v1.1.3
-	github.com/kamalshkeir/lg v0.0.8
+	github.com/kamalshkeir/lg v0.0.9
 	golang.org/x/crypto v0.21.0
 	golang.org/x/text v0.14.0
 )
