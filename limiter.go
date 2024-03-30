@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kamalshkeir/klog"
 	"github.com/kamalshkeir/kmap"
+	"github.com/kamalshkeir/lg"
 	"golang.org/x/time/rate"
 )
 
@@ -84,7 +84,7 @@ func Limiter(conf *ConfigLimiter) func(http.Handler) http.Handler {
 	return func(handler http.Handler) http.Handler {
 		return Handler(func(c *Context) {
 			ip, _, err := net.SplitHostPort(c.Request.RemoteAddr)
-			if klog.CheckError(err) {
+			if lg.CheckError(err) {
 				c.SetStatus(http.StatusInternalServerError)
 				return
 			}

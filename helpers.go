@@ -18,7 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kamalshkeir/klog"
+	"github.com/kamalshkeir/lg"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -331,7 +331,7 @@ func (router *Router) createServerCerts(domainName string, subDomains ...string)
 		}
 		tlsConfig := m.TLSConfig()
 		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
-		klog.Printfs("grAuto certified domains: %v\n", uniqueDomains)
+		lg.Printfs("grAuto certified domains: %v\n", uniqueDomains)
 		return m, tlsConfig
 	}
 	return nil, nil

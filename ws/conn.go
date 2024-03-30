@@ -11,14 +11,13 @@ import (
 	"io"
 	"math/rand"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
-	"github.com/kamalshkeir/klog"
+	"github.com/kamalshkeir/lg"
 )
 
 const (
@@ -616,16 +615,14 @@ func (w *messageWriter) flushFrame(final bool, extra []byte) error {
 	// documentation for more info.
 
 	if c.isWriting {
-		klog.Printf("rdconcurrent write to websocket connection\n")
-		os.Exit(1)
+		lg.Fatal("concurrent write to ws conn")
 	}
 	c.isWriting = true
 
 	err := c.write(w.frameType, c.writeDeadline, c.writeBuf[framePos:w.pos], extra)
 
 	if !c.isWriting {
-		klog.Printf("rdconcurrent write to websocket connection\n")
-		os.Exit(1)
+		lg.Fatal("concurrent write to ws conn")
 	}
 	c.isWriting = false
 
@@ -750,14 +747,12 @@ func (c *Conn) WritePreparedMessage(pm *PreparedMessage) error {
 		return err
 	}
 	if c.isWriting {
-		klog.Printf("rdconcurrent write to websocket connection\n")
-		os.Exit(1)
+		lg.Fatal("concurrent write to ws conn")
 	}
 	c.isWriting = true
 	err = c.write(frameType, c.writeDeadline, frameData, nil)
 	if !c.isWriting {
-		klog.Printf("rdconcurrent write to websocket connection\n")
-		os.Exit(1)
+		lg.Fatal("concurrent write to ws conn")
 	}
 	c.isWriting = false
 	return err
@@ -777,7 +772,7 @@ func (c *Conn) Write(p []byte) (n int, err error) {
 	if c.isServer && (c.newCompressionWriter == nil || !c.enableWriteCompression) {
 		// Fast path with no allocations and single frame.
 		var mw messageWriter
-		if err := c.beginMessage(&mw, BinaryMessage); klog.CheckError(err) {
+		if err := c.beginMessage(&mw, BinaryMessage); lg.CheckError(err) {
 			return 0, err
 		}
 		n := copy(c.writeBuf[mw.pos:], p)
@@ -787,14 +782,14 @@ func (c *Conn) Write(p []byte) (n int, err error) {
 	}
 
 	w, err := c.NextWriter(BinaryMessage)
-	if klog.CheckError(err) {
+	if lg.CheckError(err) {
 		return 0, err
 	}
-	if n, err = w.Write(p); klog.CheckError(err) {
+	if n, err = w.Write(p); lg.CheckError(err) {
 		return n, err
 	}
 	err = w.Close()
-	klog.CheckError(err)
+	lg.CheckError(err)
 	return n, err
 }
 
@@ -1069,8 +1064,7 @@ func (c *Conn) NextReader() (messageType int, r io.Reader, err error) {
 	// this error, panic on repeated reads to the failed connection.
 	c.readErrCount++
 	if c.readErrCount >= 1000 {
-		klog.Printf("rdrepeated read on failed websocket connection\n")
-		os.Exit(1)
+		lg.Fatal("repeated read on failed websocket connection")
 	}
 
 	return noFrame, nil, c.readErr

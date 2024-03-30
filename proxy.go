@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/kamalshkeir/klog"
+	"github.com/kamalshkeir/lg"
 )
 
 func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.ReverseProxy, url *url.URL) {
@@ -27,7 +27,7 @@ func proxyMid() func(http.Handler) http.Handler {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			host, _, err := net.SplitHostPort(r.Host)
-			if klog.CheckError(err) {
+			if lg.CheckError(err) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
@@ -47,20 +47,20 @@ func proxyMid() func(http.Handler) http.Handler {
 
 func (router *Router) ReverseProxy(host, toURL string) (newRouter *Router) {
 	urll, err := url.Parse(toURL)
-	if klog.CheckError(err) {
+	if lg.CheckError(err) {
 		return
 	}
 	if strings.Contains(host, "*") {
-		klog.Printf("rd%s contain wildcard symbol '*', Not Allowed\n")
+		lg.ErrorC("contain wildcard, Not Allowed", "host", host)
 		return
 	}
 
 	if strings.Contains(host, "/") {
-		klog.Printf("rd%s contain slash symbol '/', Not Allowed\n")
+		lg.ErrorC("contain slash symbol '/', Not Allowed", "host", host)
 		return
 	}
 	if in := strings.Index(host, ":"); in > -1 {
-		klog.Printf("ylPort is ignored in Host, you can remove '%s'\n", host[in:])
+		lg.WarnC("Port is ignored inhost")
 		host = host[:in]
 	}
 	proxy := httputil.NewSingleHostReverseProxy(urll)

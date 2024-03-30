@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kamalshkeir/klog"
 	"github.com/kamalshkeir/ksmux/gzip"
+	"github.com/kamalshkeir/lg"
 )
 
 func Gzip() func(http.Handler) http.Handler {
@@ -98,11 +98,11 @@ func Logs(callback ...func(method, path, remote string, status int, took time.Du
 				callback[0](r.Method, r.URL.Path, r.RemoteAddr, recorder.Status, took)
 			}
 			if recorder.Status >= 200 && recorder.Status < 400 {
-				klog.Printfs("gr%s\n", res)
+				lg.Printfs("gr%s\n", res)
 			} else if recorder.Status >= 400 || recorder.Status < 200 {
-				klog.Printfs("rd%s\n", res)
+				lg.Printfs("%s\n", res)
 			} else {
-				klog.Printfs("yl%s\n", res)
+				lg.Printfs("yl%s\n", res)
 			}
 		})
 	}

@@ -21,8 +21,7 @@ import (
 
 	"github.com/kamalshkeir/kencoding/json"
 	"github.com/kamalshkeir/ksmux/ws"
-
-	"github.com/kamalshkeir/klog"
+	"github.com/kamalshkeir/lg"
 )
 
 var contextPool sync.Pool
@@ -53,7 +52,7 @@ func (c *Context) Param(name string) string {
 func (c *Context) Stream(response string) error {
 	defer c.Flush()
 	_, err := c.ResponseWriter.Write([]byte("data: " + response + "\n\n"))
-	if klog.CheckError(err) {
+	if lg.CheckError(err) {
 		return err
 	}
 	return nil
@@ -92,7 +91,7 @@ func (c *Context) Text(body string) {
 	}
 	c.WriteHeader(c.status)
 	_, err := c.ResponseWriter.Write([]byte(body))
-	klog.CheckError(err)
+	lg.CheckError(err)
 }
 
 // SetCookie set cookie given key and value
@@ -189,9 +188,9 @@ func (c *Context) Json(data any) {
 	}
 	c.WriteHeader(c.status)
 	by, err := json.Marshal(data)
-	if !klog.CheckError(err) {
+	if !lg.CheckError(err) {
 		_, err = c.ResponseWriter.Write(by)
-		klog.CheckError(err)
+		lg.CheckError(err)
 	}
 }
 
@@ -203,9 +202,9 @@ func (c *Context) JsonIndent(data any) {
 	}
 	c.WriteHeader(c.status)
 	by, err := json.MarshalIndent(data, "", " \t")
-	if !klog.CheckError(err) {
+	if !lg.CheckError(err) {
 		_, err = c.ResponseWriter.Write(by)
-		klog.CheckError(err)
+		lg.CheckError(err)
 	}
 }
 
@@ -224,9 +223,9 @@ func (c *Context) Html(template_name string, data map[string]any) {
 	}
 
 	err := allTemplates.ExecuteTemplate(&buff, template_name, data)
-	if klog.CheckError(err) {
+	if lg.CheckError(err) {
 		c.status = http.StatusInternalServerError
-		klog.Printfs("rdcould not render %s : %v", template_name, err)
+		lg.Error("could not render", "err", err, "temp", template_name)
 		http.Error(c.ResponseWriter, fmt.Sprintf("could not render %s : %v", template_name, err), c.status)
 		return
 	}
@@ -238,7 +237,7 @@ func (c *Context) Html(template_name string, data map[string]any) {
 	c.WriteHeader(c.status)
 
 	_, err = buff.WriteTo(c.ResponseWriter)
-	if klog.CheckError(err) {
+	if lg.CheckError(err) {
 		return
 	}
 }
@@ -246,7 +245,7 @@ func (c *Context) Html(template_name string, data map[string]any) {
 // SaveRawHtml save templateRaw as templateName to be able to use it like c.RawHtml
 func SaveRawHtml(templateRaw string, templateName string) {
 	t, err := template.New("raw").Funcs(functions).Parse(templateRaw)
-	if !klog.CheckError(err) {
+	if !lg.CheckError(err) {
 		rawTemplates.Set(templateName, t)
 	}
 }
@@ -260,7 +259,7 @@ func ExecuteRawHtml(rawTemplateName string, data map[string]any) (string, error)
 	if !ok {
 		return "", fmt.Errorf("template not registered. Use ksmux.SaveRawHtml before using c.RawHtml")
 	}
-	if err := t.Execute(&buff, data); klog.CheckError(err) {
+	if err := t.Execute(&buff, data); lg.CheckError(err) {
 		return "", err
 	}
 	return buff.String(), nil
@@ -284,7 +283,7 @@ func (c *Context) NamedRawHtml(rawTemplateName string, data map[string]any) erro
 		return fmt.Errorf("template not registered. Use ksmux.SaveRawHtml before using c.RawHtml")
 	}
 
-	if err := t.Execute(&buff, data); klog.CheckError(err) {
+	if err := t.Execute(&buff, data); lg.CheckError(err) {
 		return err
 	}
 	c.SetHeader("Content-Type", "text/html; charset=utf-8")
@@ -293,7 +292,7 @@ func (c *Context) NamedRawHtml(rawTemplateName string, data map[string]any) erro
 	}
 	c.WriteHeader(c.status)
 	_, err := buff.WriteTo(c.ResponseWriter)
-	if klog.CheckError(err) {
+	if lg.CheckError(err) {
 		return err
 	}
 	return nil
@@ -317,7 +316,7 @@ func (c *Context) RawHtml(rawTemplate string, data map[string]any) error {
 		return err
 	}
 
-	if err := t.Execute(&buff, data); klog.CheckError(err) {
+	if err := t.Execute(&buff, data); lg.CheckError(err) {
 		return err
 	}
 	c.SetHeader("Content-Type", "text/html; charset=utf-8")
@@ -326,7 +325,7 @@ func (c *Context) RawHtml(rawTemplate string, data map[string]any) error {
 	}
 	c.WriteHeader(c.status)
 	_, err = buff.WriteTo(c.ResponseWriter)
-	if klog.CheckError(err) {
+	if lg.CheckError(err) {
 		return err
 	}
 	return nil
@@ -388,10 +387,10 @@ func (c *Context) BodyJson() map[string]any {
 	dec := json.NewDecoder(c.Request.Body)
 	if err := dec.Decode(&d); err == io.EOF {
 		//empty body
-		klog.Printf("rdempty body EOF\n")
+		lg.Error("empty body EOF")
 		return nil
 	} else if err != nil {
-		klog.Printf("rderror BodyJson: %v \n", err)
+		lg.Error("error BodyJson: %v", err)
 		return nil
 	} else {
 		return d
@@ -403,12 +402,12 @@ func (c *Context) BindBody(strctPointer any, isXML ...bool) error {
 	defer c.Request.Body.Close()
 	if len(isXML) > 0 && isXML[0] {
 		dec := xml.NewDecoder(c.Request.Body)
-		if err := dec.Decode(strctPointer); klog.CheckError(err) {
+		if err := dec.Decode(strctPointer); lg.CheckError(err) {
 			return err
 		}
 	} else {
 		dec := json.NewDecoder(c.Request.Body)
-		if err := dec.Decode(strctPointer); klog.CheckError(err) {
+		if err := dec.Decode(strctPointer); lg.CheckError(err) {
 			return err
 		}
 	}
@@ -418,7 +417,7 @@ func (c *Context) BindBody(strctPointer any, isXML ...bool) error {
 func (c *Context) BodyText() string {
 	defer c.Request.Body.Close()
 	b, err := io.ReadAll(c.Request.Body)
-	if klog.CheckError(err) {
+	if lg.CheckError(err) {
 		return ""
 	}
 	return string(b)
@@ -451,7 +450,7 @@ func (c *Context) ServeFile(content_type, path_to_file string) {
 func (c *Context) ServeEmbededFile(content_type string, embed_file []byte) {
 	c.SetHeader("Content-Type", content_type)
 	_, err := c.ResponseWriter.Write(embed_file)
-	klog.CheckError(err)
+	lg.CheckError(err)
 }
 
 func (c *Context) ParseMultipartForm(size ...int64) (formData url.Values, formFiles map[string][]*multipart.FileHeader) {
@@ -462,11 +461,11 @@ func (c *Context) ParseMultipartForm(size ...int64) (formData url.Values, formFi
 	r := c.Request
 	parseErr := r.ParseMultipartForm(s)
 	if parseErr != nil {
-		klog.Printf("rdParseMultipartForm error = %v\n", parseErr)
+		lg.Error("ParseMultipartForm error", "err", parseErr)
 	}
 	defer func() {
 		err := r.MultipartForm.RemoveAll()
-		klog.CheckError(err)
+		lg.CheckError(err)
 	}()
 	formData = r.Form
 	formFiles = r.MultipartForm.File
@@ -543,7 +542,7 @@ func (c *Context) UploadFile(received_filename, folder_out string, acceptedForma
 		if received_filename == inputName {
 			f := files[0]
 			file, err := f.Open()
-			if klog.CheckError(err) {
+			if lg.CheckError(err) {
 				return "", nil, err
 			}
 			defer file.Close()
@@ -570,7 +569,7 @@ func (c *Context) UploadFile(received_filename, folder_out string, acceptedForma
 				url = MEDIA_DIR + "/" + folder_out + "/" + f.Filename
 				data = []byte(data_string)
 			} else {
-				klog.Printf("rd%s not handled \n", f.Filename)
+				lg.Error("not handled", "fname", f.Filename)
 				return "", nil, fmt.Errorf("expecting filename to finish to be %v", acceptedFormats)
 			}
 		}
@@ -588,7 +587,7 @@ func (c *Context) UploadFiles(received_filenames []string, folder_out string, ac
 		if len(files) > 0 && SliceContains(received_filenames, inputName) {
 			for _, f := range files {
 				file, err := f.Open()
-				if klog.CheckError(err) {
+				if lg.CheckError(err) {
 					return nil, nil, err
 				}
 				defer file.Close()
@@ -616,7 +615,7 @@ func (c *Context) UploadFiles(received_filenames []string, folder_out string, ac
 					urls = append(urls, url)
 					datas = append(datas, []byte(data_string))
 				} else {
-					klog.Printf("rd%s not handled \n", f.Filename)
+					lg.Error("not handled")
 					return nil, nil, fmt.Errorf("file type not supported, accepted extensions: %v", acceptedFormats)
 				}
 			}

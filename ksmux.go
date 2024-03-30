@@ -13,8 +13,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kamalshkeir/klog"
 	"github.com/kamalshkeir/ksmux/ws"
+	"github.com/kamalshkeir/lg"
 )
 
 func UpgradeConnection(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*ws.Conn, error) {
@@ -343,11 +343,11 @@ func (r *Router) Handle(method, path string, handler Handler, origines ...string
 	varsCount := uint16(0)
 
 	if method == "" {
-		klog.Printf("rdmethod cannot be empty for %s\n", path)
+		lg.Error("method cannot be empty", "path", path)
 		return nil
 	}
 	if handler == nil {
-		klog.Printf("rdmissing handler for %s\n", path)
+		lg.Error("missing handler", "path", path)
 		return nil
 	}
 
@@ -441,7 +441,7 @@ func (handler Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //	router.ServeFiles("/src/*filepath", http.Dir("/var/www"))
 func (r *Router) ServeFiles(path string, root http.FileSystem) {
 	if len(path) < 10 || path[len(path)-10:] != "/*filepath" {
-		klog.Printf("rdpath must end with /*filepath in path, path: %s\n", path)
+		lg.Error("path must end with /*filepath in path", "path", path)
 		return
 	}
 
@@ -503,7 +503,7 @@ func (router *Router) WithDocs(genJsonDocs bool, genGoDocs ...bool) *Router {
 	}
 	if !swagFound && genJsonDocs {
 		err := CheckAndInstallSwagger()
-		if klog.CheckError(err) {
+		if lg.CheckError(err) {
 			return router
 		}
 	}
@@ -653,7 +653,7 @@ func (router *Router) Run(addr string) {
 				ADDRESS = HOST + addr
 			}
 		} else {
-			klog.Printf("rderror: server address not valid\n")
+			lg.Error("server addr not valid")
 			return
 		}
 	}
@@ -663,10 +663,10 @@ func (router *Router) Run(addr string) {
 	// Listen and serve
 	go func() {
 		if err := router.Server.ListenAndServe(); err != http.ErrServerClosed {
-			klog.Printf("rdUnable to shutdown the server : %v\n", err)
+			lg.Error("Unable to shutdown the server", "err", err)
 			os.Exit(1)
 		} else {
-			klog.Printfs("grServer Off!\n")
+			lg.Info("Server Off")
 		}
 	}()
 
@@ -684,7 +684,7 @@ func (router *Router) Run(addr string) {
 		GenerateJsonDocs()
 		OnDocsGenerationReady()
 	}
-	klog.Printfs("mgrunning on http://%s\n", ADDRESS)
+	lg.Printfs("mgrunning on http://%s\n", ADDRESS)
 	// graceful Shutdown server
 	router.gracefulShutdown()
 }
@@ -702,7 +702,7 @@ func (router *Router) RunTLS(addr, cert, certKey string) {
 				ADDRESS = HOST + addr
 			}
 		} else {
-			klog.Printf("rderror: server address not valid\n")
+			lg.Error("server add not valid")
 			return
 		}
 	}
@@ -711,11 +711,11 @@ func (router *Router) RunTLS(addr, cert, certKey string) {
 	router.initServer(ADDRESS)
 
 	go func() {
-		klog.Printfs("mgrunning on https://%s\n", ADDRESS)
+		lg.Printfs("mgrunning on https://%s\n", ADDRESS)
 		if err := router.Server.ListenAndServeTLS(cert, certKey); err != http.ErrServerClosed {
-			klog.Printf("rdUnable to shutdown the server : %v\n", err)
+			lg.Error("Unable to shutdown the server", "err", err)
 		} else {
-			klog.Printfs("grServer Off!\n")
+			lg.Info("Server Off")
 		}
 	}()
 	if generateSwaggerJson {
@@ -772,18 +772,17 @@ func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
 	// graceful Shutdown server
 	certManager, tlsconf := router.createServerCerts(DOMAIN, SUBDOMAINS...)
 	if certManager == nil || tlsconf == nil {
-		klog.Printf("rdunable to create tls config\n")
-		os.Exit(1)
+		lg.Fatal("unable to create tlsconfig")
 		return
 	}
 	router.initAutoServer(tlsconf)
 	go http.ListenAndServe(":80", certManager.HTTPHandler(nil))
 	go func() {
-		klog.Printfs("mgrunning on https://%s , subdomains: %v\n", domainName, SUBDOMAINS)
+		lg.Printfs("mgrunning on https://%s , subdomains: %v\n", domainName, SUBDOMAINS)
 		if err := router.Server.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
-			klog.Printf("rdUnable to run the server : %v\n", err)
+			lg.Error("Unable to run the server", "err", err)
 		} else {
-			klog.Printfs("grServer Off !\n")
+			lg.Printfs("grServer Off !\n")
 		}
 	}()
 	if generateSwaggerJson {

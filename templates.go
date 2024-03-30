@@ -22,11 +22,10 @@ import (
 	"unicode"
 
 	"github.com/kamalshkeir/kencoding/json"
+	"github.com/kamalshkeir/lg"
 	"golang.org/x/text/runes"
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
-
-	"github.com/kamalshkeir/klog"
 )
 
 var allTemplates = template.New("all_templates")
@@ -60,7 +59,7 @@ func (router *Router) EmbededStatics(embeded embed.FS, pathLocalDir, webPath str
 	webPath = strings.TrimSuffix(webPath, "/")
 	toembed_dir, err := fs.Sub(embeded, pathLocalDir)
 	if err != nil {
-		klog.Printf("rdServeEmbededDir error= %v\n", err)
+		lg.Error("error serving embeded dir", "err", err)
 		return
 	}
 	toembed_root := http.FileServer(http.FS(toembed_dir))
@@ -106,19 +105,19 @@ func (router *Router) EmbededTemplates(template_embed embed.FS, rootDir string) 
 	pfx := len(cleanRoot) + 1
 
 	err := fs.WalkDir(template_embed, cleanRoot, func(path string, info fs.DirEntry, e1 error) error {
-		if klog.CheckError(e1) {
+		if lg.CheckError(e1) {
 			return e1
 		}
 		if !info.IsDir() && strings.HasSuffix(path, ".html") {
 			b, e2 := template_embed.ReadFile(path)
-			if klog.CheckError(e2) {
+			if lg.CheckError(e2) {
 				return e2
 			}
 
 			name := filepath.ToSlash(path[pfx:])
 			t := allTemplates.New(name).Funcs(functions)
 			_, e3 := t.Parse(string(b))
-			if klog.CheckError(e3) {
+			if lg.CheckError(e3) {
 				return e2
 			}
 		}
@@ -144,7 +143,7 @@ func (router *Router) ServeEmbededFile(file []byte, endpoint, contentType string
 func NewFuncMap(funcMap map[string]any) {
 	for k, v := range funcMap {
 		if _, ok := functions[k]; ok {
-			klog.Printf("rdunable to add %s,already exist !\n", k)
+			lg.Error("unable to add, already exist", "func", k)
 		} else {
 			functions[k] = v
 		}
@@ -154,7 +153,7 @@ func NewFuncMap(funcMap map[string]any) {
 func (router *Router) NewFuncMap(funcMap map[string]any) {
 	for k, v := range funcMap {
 		if _, ok := functions[k]; ok {
-			klog.Printf("rdunable to add %s,already exist !\n", k)
+			lg.Error("unable to add, already exist", "func", k)
 		} else {
 			functions[k] = v
 		}
@@ -163,7 +162,7 @@ func (router *Router) NewFuncMap(funcMap map[string]any) {
 
 func (router *Router) NewTemplateFunc(funcName string, function any) {
 	if _, ok := functions[funcName]; ok {
-		klog.Printf("rdunable to add %s,already exist !\n", funcName)
+		lg.Error("unable to add, already exist", "func", funcName)
 	} else {
 		functions[funcName] = function
 	}
@@ -182,13 +181,13 @@ var functions = template.FuncMap{
 	"mapKV": func(kvs ...any) map[string]any {
 		res := map[string]any{}
 		if len(kvs)%2 != 0 {
-			klog.Printf("rdkvs in mapKV template func is not even: %v with length %d\n", kvs, len(kvs))
+			lg.Error(fmt.Sprintf("kvs in mapKV template func is not even: %v with length %d", kvs, len(kvs)))
 			return res
 		}
 		for i := 0; i < len(kvs); i += 2 {
 			key, ok := kvs[i].(string)
 			if !ok {
-				klog.Printf("rdargument at position %d must be a string (key)\n", i)
+				lg.Error(fmt.Sprintf("argument at position %d must be a string (key)", i))
 				res["error"] = fmt.Errorf("argument at position %d must be a string (key)", i).Error()
 				return res
 			}
@@ -248,7 +247,7 @@ var functions = template.FuncMap{
 		case string:
 			if len(v) >= len("2006-01-02T15:04") && strings.Contains(v[:13], "T") {
 				p, err := time.Parse("2006-01-02T15:04", v)
-				if klog.CheckError(err) {
+				if lg.CheckError(err) {
 					valueToReturn = time.Now().Format("2006-01-02T15:04")
 				} else {
 					valueToReturn = p.Format("2006-01-02T15:04")
@@ -256,7 +255,7 @@ var functions = template.FuncMap{
 			} else {
 				if len(v) >= 16 {
 					p, err := time.Parse("2006-01-02 15:04", v[:16])
-					if klog.CheckError(err) {
+					if lg.CheckError(err) {
 						valueToReturn = time.Now().Format("2006-01-02T15:04")
 					} else {
 						valueToReturn = p.Format("2006-01-02T15:04")
@@ -265,7 +264,7 @@ var functions = template.FuncMap{
 			}
 		default:
 			if v != nil {
-				klog.Printf("rdtype of %v %T is not handled,type is: %v\n", t, v, v)
+				lg.Error(fmt.Sprintf("type of %v %T is not handled,type is: %v", t, v, v))
 			}
 			valueToReturn = ""
 		}
@@ -284,7 +283,7 @@ var functions = template.FuncMap{
 		case string:
 			if len(v) >= len(dString) && strings.Contains(v[:13], "T") {
 				p, err := time.Parse(dString, v)
-				if klog.CheckError(err) {
+				if lg.CheckError(err) {
 					valueToReturn = time.Now().Format(dString)
 				} else {
 					valueToReturn = p.Format(dString)
@@ -292,7 +291,7 @@ var functions = template.FuncMap{
 			} else {
 				if len(v) >= 16 {
 					p, err := time.Parse(dString, v[:16])
-					if klog.CheckError(err) {
+					if lg.CheckError(err) {
 						valueToReturn = time.Now().Format(dString)
 					} else {
 						valueToReturn = p.Format(dString)
@@ -301,7 +300,7 @@ var functions = template.FuncMap{
 			}
 		default:
 			if v != nil {
-				klog.Printf("rdtype of %v is not handled,type is: %v\n", t, v)
+				lg.Error(fmt.Sprintf("type of %v is not handled,type is: %v", t, v))
 			}
 			valueToReturn = ""
 		}

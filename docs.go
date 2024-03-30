@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kamalshkeir/klog"
+	"github.com/kamalshkeir/lg"
 )
 
 type Route struct {
@@ -83,7 +83,7 @@ type DocsOut struct {
 
 func (r *Route) Summary(summary string) *Route {
 	if r.Docs == nil {
-		klog.Printf("rdmissing app.WithDocs before\n")
+		lg.Error("missing app.WithDocs before")
 		return r
 	}
 	r.Docs.Summary = summary
@@ -92,7 +92,7 @@ func (r *Route) Summary(summary string) *Route {
 }
 func (r *Route) Description(description string) *Route {
 	if r.Docs == nil {
-		klog.Printf("rdmissing app.WithDocs before\n")
+		lg.Error("missing app.WithDocs before")
 		return r
 	}
 	r.Docs.Description = description
@@ -101,7 +101,7 @@ func (r *Route) Description(description string) *Route {
 }
 func (r *Route) Tags(tags ...string) *Route {
 	if r.Docs == nil {
-		klog.Printf("rdmissing app.WithDocs before\n")
+		lg.Error("missing app.WithDocs before")
 		return r
 	}
 	r.Docs.Tags = strings.Join(tags, ", ")
@@ -112,7 +112,7 @@ func (r *Route) Tags(tags ...string) *Route {
 // Accept set docs accept, default 'json'
 func (r *Route) Accept(accept string) *Route {
 	if r.Docs == nil {
-		klog.Printf("rdmissing app.WithDocs before\n")
+		lg.Error("missing app.WithDocs before")
 		return r
 	}
 	r.Docs.Accept = accept
@@ -123,7 +123,7 @@ func (r *Route) Accept(accept string) *Route {
 // Produce set docs produce, default 'json'
 func (r *Route) Produce(produce string) *Route {
 	if r.Docs == nil {
-		klog.Printf("rdmissing app.WithDocs before\n")
+		lg.Error("missing app.WithDocs before")
 		return r
 	}
 	r.Docs.Produce = produce
@@ -134,7 +134,7 @@ func (r *Route) Produce(produce string) *Route {
 // In must be like "name  in  typePath  required  'desc'" or you can use ksmux.DocsIn.String() method
 func (r *Route) In(docsParam ...string) *Route {
 	if r.Docs == nil {
-		klog.Printf("rdmissing app.WithDocs before\n")
+		lg.Error("missing app.WithDocs before")
 		return r
 	}
 	for i := range docsParam {
@@ -148,7 +148,7 @@ func (r *Route) In(docsParam ...string) *Route {
 // Out must be like "200  {object}/{array}/{string}  app1.Account/string  'okifstring'" or you can use ksmux.DocsOut.String() method
 func (r *Route) Out(sucessResponse string, failureResponses ...string) *Route {
 	if r.Docs == nil {
-		klog.Printf("rdmissing app.WithDocs before\n")
+		lg.Error("missing app.WithDocs before")
 		return r
 	}
 	r.Docs.Response = strings.ReplaceAll(sucessResponse, "'", "\"")
@@ -182,7 +182,7 @@ func GenerateJsonDocs(entryDocsFile ...string) {
 	cmd := exec.Command("swag", "init", "-o", DocsOutJson, "-g", DocsEntryFile, "--outputTypes", "json")
 	err := cmd.Run()
 	if err != nil {
-		klog.Printfs("rdcould not generate swagger.json %s : %s\n", err.Error(), "swag init -o "+DocsOutJson+" -g "+DocsEntryFile+" --outputTypes json")
+		lg.Error("could not generate swagger.json", "err", err, "cmd", "swag init -o "+DocsOutJson+" -g "+DocsEntryFile+" --outputTypes json")
 	}
 }
 
@@ -198,16 +198,16 @@ func GenerateGoDocsComments(pkgName ...string) {
 	if _, err := os.Stat(typesFolder); err != nil {
 		file, err := os.Create(typesFolder)
 		if err != nil {
-			klog.Printf("rd%v\n", err)
+			lg.Error(err.Error())
 			return
 		}
 		defer file.Close()
 		_, err = file.WriteString(fmt.Sprintf(ksmuxdocsTypes, "`json:\"is_admin\"`", "`json:\"created_at\"`"))
-		klog.CheckError(err)
+		lg.CheckError(err)
 	}
 	file, err := os.Create(DocsEntryFile)
 	if err != nil {
-		klog.Printf("rd%v\n", err)
+		lg.Error(err.Error())
 		return
 	}
 	defer file.Close()

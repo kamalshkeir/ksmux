@@ -5,12 +5,13 @@
 package ksmux
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/kamalshkeir/klog"
+	"github.com/kamalshkeir/lg"
 )
 
 type typeOfNode uint8
@@ -114,7 +115,7 @@ walk:
 						pathSeg = strings.SplitN(pathSeg, "/", 2)[0]
 					}
 					prefix := fullPath[:strings.Index(fullPath, pathSeg)] + n.path
-					klog.Printf("rd'%s' in new path'%s' conflicts with existing wildcard '%s' with prefix '%s' \n", pathSeg, fullPath, n.path, prefix)
+					lg.Error(fmt.Sprintf("'%s' in new path'%s' conflicts with existing wildcard '%s' with prefix '%s'", pathSeg, fullPath, n.path, prefix))
 					os.Exit(1)
 				}
 			}
@@ -152,8 +153,7 @@ walk:
 
 		// Otherwise add handler to current node
 		if n.handler != nil {
-			klog.Printf("rdanother handler is already registered for this path '%s'\n", fullPath)
-			os.Exit(1)
+			lg.Fatal(fmt.Scanf("another handler is already registered for this path '%s'\n", fullPath))
 		}
 		n.origines = strings.Join(origines, ",")
 		n.handler = handler
@@ -171,21 +171,19 @@ func (n *node) insertChild(path, fullPath string, handler Handler, origines ...s
 
 		// The wildcard name must not contain ':' and '*'
 		if !valid {
-			klog.Printf("rdonly one wildcard per path segment is allowed, has:  '%s' in path '%s'\n", wildcard, fullPath)
-			os.Exit(1)
+			lg.Fatal(fmt.Sprintf("only one wildcard per path segment is allowed, has:  '%s' in path '%s'", wildcard, fullPath))
 		}
 
 		// Check if the wildcard has a name
 		if len(wildcard) < 2 {
-			klog.Printf("rdwildcards must be named with a non-empty name in path:  '%s'\n", fullPath)
-			os.Exit(1)
+			lg.Fatal(fmt.Sprintf("wildcards must be named with a non-empty name in path:  '%s'", fullPath))
 		}
 
 		// Check if this node has existing children which would be
 		// unreachable if we insert the wildcard here
 		if len(n.children) > 0 {
-			klog.Printf("rdwildcard segment '%s' conflicts with existing children in path '%s'\n", wildcard, fullPath)
-			os.Exit(1)
+			lg.Fatal(fmt.Sprintf("wildcard segment '%s' conflicts with existing children in path '%s'", wildcard, fullPath))
+
 		}
 
 		// param
@@ -225,19 +223,17 @@ func (n *node) insertChild(path, fullPath string, handler Handler, origines ...s
 
 		// catchAll
 		if i+len(wildcard) != len(path) {
-			klog.Printf("rdcatch-all routes are only allowed at the end of the path in path '%s'\n", fullPath)
-			os.Exit(1)
+			lg.Fatal("catch-all routes are only allowed at the end of the path in path '%s'", fullPath)
 		}
 
 		if len(n.path) > 0 && n.path[len(n.path)-1] == '/' {
-			klog.Printf("rdcatch-all conflicts with existing handler for the path segment root in path '%s'\n", fullPath)
-			os.Exit(1)
+			lg.Fatal("catch-all conflicts with existing handler for the path segment root in path '%s'", fullPath)
 		}
 
 		// Currently fixed width 1 for '/'
 		i--
 		if path[i] != '/' {
-			klog.Printf("rdno / before catch-all in path '%s'\n", fullPath)
+			lg.Fatal(fmt.Sprintf("no / before catch-all in path '%s'", fullPath))
 			os.Exit(1)
 		}
 
@@ -374,8 +370,7 @@ walk: // Outer loop for walking the tree
 					return
 
 				default:
-					klog.Printf("rdinvalid node type '%v'\n", n.nType)
-					os.Exit(1)
+					lg.Fatal(fmt.Sprintf("invalid node type '%v'", n.nType))
 				}
 			}
 		} else if path == prefix {
@@ -600,8 +595,7 @@ walk: // Outer loop for walking the tree
 				return append(ciPath, path...)
 
 			default:
-				klog.Printf("rdinvalid node type '%v'\n", n.nType)
-				os.Exit(1)
+				lg.Fatal(fmt.Sprintf("invalid node type '%v'", n.nType))
 			}
 		} else {
 			// We should have reached the node containing the handler.
