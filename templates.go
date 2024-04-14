@@ -5,7 +5,6 @@
 package ksmux
 
 import (
-	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
@@ -31,7 +30,7 @@ import (
 var allTemplates = template.New("all_templates")
 
 // BeforeRenderHtml executed before every html render, you can use reqCtx.Value(key).(type.User) for example and add data to templates globaly
-func BeforeRenderHtml(uniqueName string, fn func(reqCtx context.Context, data *map[string]any)) {
+func BeforeRenderHtml(uniqueName string, fn func(c *Context, data *map[string]any)) {
 	beforeRenderHtml.Set(uniqueName, fn)
 	beforeRenderHtmlSetted = true
 }

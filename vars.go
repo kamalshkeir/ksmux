@@ -5,7 +5,6 @@
 package ksmux
 
 import (
-	"context"
 	"html/template"
 	"net/http"
 	"time"
@@ -29,7 +28,7 @@ var (
 	}
 	// context
 	MultipartSize          = 10 << 20
-	beforeRenderHtml       = kmap.New[string, func(reqCtx context.Context, data *map[string]any)](false)
+	beforeRenderHtml       = kmap.New[string, func(c *Context, data *map[string]any)](false)
 	rawTemplates           = kmap.New[string, *template.Template](false)
 	beforeRenderHtmlSetted = false
 	// docs

@@ -216,8 +216,8 @@ func (c *Context) Html(template_name string, data map[string]any) {
 	}
 	data["Request"] = c.Request
 	if beforeRenderHtmlSetted {
-		beforeRenderHtml.Range(func(key string, value func(reqCtx context.Context, data *map[string]any)) bool {
-			value(c.Request.Context(), &data)
+		beforeRenderHtml.Range(func(key string, value func(c *Context, data *map[string]any)) bool {
+			value(c, &data)
 			return true
 		})
 	}
@@ -273,8 +273,8 @@ func (c *Context) NamedRawHtml(rawTemplateName string, data map[string]any) erro
 	}
 	data["Request"] = c.Request
 	if beforeRenderHtmlSetted {
-		beforeRenderHtml.Range(func(key string, value func(reqCtx context.Context, data *map[string]any)) bool {
-			value(c.Request.Context(), &data)
+		beforeRenderHtml.Range(func(key string, value func(c *Context, data *map[string]any)) bool {
+			value(c, &data)
 			return true
 		})
 	}
@@ -306,8 +306,8 @@ func (c *Context) RawHtml(rawTemplate string, data map[string]any) error {
 	}
 	data["Request"] = c.Request
 	if beforeRenderHtmlSetted {
-		beforeRenderHtml.Range(func(key string, value func(reqCtx context.Context, data *map[string]any)) bool {
-			value(c.Request.Context(), &data)
+		beforeRenderHtml.Range(func(key string, value func(c *Context, data *map[string]any)) bool {
+			value(c, &data)
 			return true
 		})
 	}
