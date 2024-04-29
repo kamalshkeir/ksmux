@@ -6,7 +6,10 @@ package ksmux
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -300,23 +303,6 @@ func GetPrivateIp() string {
 	return pIp
 }
 
-// func getSelfSignedOrLetsEncryptCert(certManager *autocert.Manager) func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-// 	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-// 		dirCache, ok := certManager.Cache.(autocert.DirCache)
-// 		if !ok {
-// 			dirCache = "certs"
-// 		}
-
-// 		keyFile := filepath.Join(string(dirCache), hello.ServerName+".key")
-// 		crtFile := filepath.Join(string(dirCache), hello.ServerName+".crt")
-// 		certificate, err := tls.LoadX509KeyPair(crtFile, keyFile)
-// 		if err != nil {
-// 			return certManager.GetCertificate(hello)
-// 		}
-// 		return &certificate, err
-// 	}
-// }
-
 func (router *Router) createServerCerts(domainName string, subDomains ...string) (*autocert.Manager, *tls.Config) {
 	uniqueDomains := []string{}
 	domainsToCertify := map[string]bool{}
@@ -348,11 +334,34 @@ func (router *Router) createServerCerts(domainName string, subDomains ...string)
 		}
 		tlsConfig := m.TLSConfig()
 		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
-		// tlsConfig.GetCertificate = getSelfSignedOrLetsEncryptCert(m)
+		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			cert, err := m.GetCertificate(hello)
+			if err != nil {
+				return nil, err
+			}
+			saveCertificateAndKey(cert)
+			return cert, nil
+		}
 		lg.Printfs("grAuto certified domains: %v\n", uniqueDomains)
 		return m, tlsConfig
 	}
 	return nil, nil
+}
+
+func saveCertificateAndKey(cert *tls.Certificate) {
+	// Save the certificate
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+	err := os.WriteFile("cert.pem", certPEM, 0644)
+	if lg.CheckError(err) {
+		return
+	}
+
+	// Save the private key
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(cert.PrivateKey.(*rsa.PrivateKey))})
+	err = os.WriteFile("key.pem", keyPEM, 0600)
+	if lg.CheckError(err) {
+		return
+	}
 }
 
 var copyBufPool = sync.Pool{
