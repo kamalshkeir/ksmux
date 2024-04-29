@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -331,12 +332,25 @@ func (router *Router) createServerCerts(domainName string, subDomains ...string)
 			Prompt:     autocert.AcceptTOS,
 			Cache:      autocert.DirCache("certs"),
 			HostPolicy: autocert.HostWhitelist(uniqueDomains...),
+			Email:      os.Getenv("SSL_EMAIL"),
 		}
 		tlsConfig := m.TLSConfig()
 		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
 		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			// Attempt to retrieve the certificate from the cache
+			certData, err := m.Cache.Get(hello.Context(), hello.ServerName)
+			if err == nil {
+				// Certificate exists, parse it into a *tls.Certificate
+				cert, err := tls.X509KeyPair(certData, nil)
+				if lg.CheckError(err) {
+					return nil, err
+				}
+				return &cert, nil
+			}
+
+			// Certificate does not exist, request a new one
 			cert, err := m.GetCertificate(hello)
-			if err != nil {
+			if lg.CheckError(err) {
 				return nil, err
 			}
 			saveCertificateAndKey(cert)
@@ -349,19 +363,39 @@ func (router *Router) createServerCerts(domainName string, subDomains ...string)
 }
 
 func saveCertificateAndKey(cert *tls.Certificate) {
+	// Assuming cert.Leaf is the parsed certificate
+	domain := cert.Leaf.Subject.CommonName
+
 	// Save the certificate
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
-	err := os.WriteFile("cert.pem", certPEM, 0644)
+	certFile := fmt.Sprintf("certs/%s_cert.pem", domain)
+	if fileExists(certFile) {
+		return
+	}
+	err := os.WriteFile(certFile, certPEM, 0644)
 	if lg.CheckError(err) {
 		return
 	}
 
 	// Save the private key
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(cert.PrivateKey.(*rsa.PrivateKey))})
-	err = os.WriteFile("key.pem", keyPEM, 0600)
-	if lg.CheckError(err) {
+	keyFile := fmt.Sprintf("certs/%s_key.pem", domain)
+	if fileExists(keyFile) {
 		return
 	}
+	err = os.WriteFile(keyFile, keyPEM, 0600)
+	if lg.CheckError(err) {
+		log.Fatalf("Failed to save private key: %v", err)
+	}
+	lg.Printfs("Private key file for %s saved successfully.\n", domain)
+}
+
+func fileExists(filename string) bool {
+	info, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return !info.IsDir()
 }
 
 var copyBufPool = sync.Pool{
