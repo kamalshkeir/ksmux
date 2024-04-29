@@ -40,8 +40,9 @@ func init() {
 type Context struct {
 	http.ResponseWriter
 	*http.Request
-	Params Params
-	status int
+	Params      Params
+	status      int
+	pushOptions *http.PushOptions
 }
 
 func (c *Context) Param(name string) string {
@@ -56,6 +57,24 @@ func (c *Context) Stream(response string) error {
 		return err
 	}
 	return nil
+}
+
+func (c *Context) IsPusher() bool {
+	_, ok := c.ResponseWriter.(http.Pusher)
+	return ok
+}
+
+func (c *Context) WithPushOptions(opts *http.PushOptions) {
+	c.pushOptions = opts
+}
+
+func (c *Context) Push(paths ...string) {
+	pusher, ok := c.ResponseWriter.(http.Pusher)
+	if ok {
+		for _, p := range paths {
+			pusher.Push(p, c.pushOptions)
+		}
+	}
 }
 
 func (c *Context) UpgradeConnection() (*ws.Conn, error) {
