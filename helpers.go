@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -301,22 +300,22 @@ func GetPrivateIp() string {
 	return pIp
 }
 
-func getSelfSignedOrLetsEncryptCert(certManager *autocert.Manager) func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		dirCache, ok := certManager.Cache.(autocert.DirCache)
-		if !ok {
-			dirCache = "certs"
-		}
+// func getSelfSignedOrLetsEncryptCert(certManager *autocert.Manager) func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+// 	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+// 		dirCache, ok := certManager.Cache.(autocert.DirCache)
+// 		if !ok {
+// 			dirCache = "certs"
+// 		}
 
-		keyFile := filepath.Join(string(dirCache), hello.ServerName+".key")
-		crtFile := filepath.Join(string(dirCache), hello.ServerName+".crt")
-		certificate, err := tls.LoadX509KeyPair(crtFile, keyFile)
-		if err != nil {
-			return certManager.GetCertificate(hello)
-		}
-		return &certificate, err
-	}
-}
+// 		keyFile := filepath.Join(string(dirCache), hello.ServerName+".key")
+// 		crtFile := filepath.Join(string(dirCache), hello.ServerName+".crt")
+// 		certificate, err := tls.LoadX509KeyPair(crtFile, keyFile)
+// 		if err != nil {
+// 			return certManager.GetCertificate(hello)
+// 		}
+// 		return &certificate, err
+// 	}
+// }
 
 func (router *Router) createServerCerts(domainName string, subDomains ...string) (*autocert.Manager, *tls.Config) {
 	uniqueDomains := []string{}
@@ -349,7 +348,7 @@ func (router *Router) createServerCerts(domainName string, subDomains ...string)
 		}
 		tlsConfig := m.TLSConfig()
 		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
-		tlsConfig.GetCertificate = getSelfSignedOrLetsEncryptCert(m)
+		// tlsConfig.GetCertificate = getSelfSignedOrLetsEncryptCert(m)
 		lg.Printfs("grAuto certified domains: %v\n", uniqueDomains)
 		return m, tlsConfig
 	}
