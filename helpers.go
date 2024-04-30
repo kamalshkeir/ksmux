@@ -11,12 +11,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +27,9 @@ import (
 	"github.com/kamalshkeir/lg"
 	"golang.org/x/crypto/acme/autocert"
 )
+
+var errPolicyMismatch = errors.New("the host did not match the allowed hosts")
+var AutoCertRegexHostPolicy = false
 
 // Param is a single URL parameter, consisting of a key and a value.
 type Param struct {
@@ -355,6 +360,20 @@ func (router *Router) createServerCerts(domainName string, subDomains ...string)
 			}
 			saveCertificateAndKey(cert)
 			return cert, nil
+		}
+		if AutoCertRegexHostPolicy {
+			sp := strings.Split(domainName, ".")
+			if len(sp) > 2 {
+				domainName = sp[1] + "." + sp[2]
+			}
+			domainNameReg := strings.ReplaceAll(domainName, ".", `\.`)
+			allowedHosts := regexp.MustCompile(`^([a-zA-Z0-9]+(-[a-zA-Z0-9]+)*\.)?` + domainNameReg + `$`)
+			m.HostPolicy = func(_ context.Context, host string) error {
+				if allowedHosts.MatchString(host) {
+					return nil
+				}
+				return errPolicyMismatch
+			}
 		}
 		lg.Printfs("grAuto certified domains: %v\n", uniqueDomains)
 		return m, tlsConfig
