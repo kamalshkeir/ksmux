@@ -6,13 +6,13 @@ package ksmux
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -363,7 +363,6 @@ func (router *Router) createServerCerts(domainName string, subDomains ...string)
 }
 
 func saveCertificateAndKey(cert *tls.Certificate) {
-	// Assuming cert.Leaf is the parsed certificate
 	domain := cert.Leaf.Subject.CommonName
 
 	// Save the certificate
@@ -374,18 +373,33 @@ func saveCertificateAndKey(cert *tls.Certificate) {
 	}
 	err := os.WriteFile(certFile, certPEM, 0644)
 	if lg.CheckError(err) {
+		lg.ErrorC("Failed to save certificate", "err", err)
 		return
 	}
 
 	// Save the private key
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(cert.PrivateKey.(*rsa.PrivateKey))})
+	var keyPEM []byte
+	switch key := cert.PrivateKey.(type) {
+	case *rsa.PrivateKey:
+		keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	case *ecdsa.PrivateKey:
+		b, err := x509.MarshalECPrivateKey(key)
+		if lg.CheckError(err) {
+			lg.Printfs("Unable to marshal ECDSA private key: %v\n", err)
+		}
+		keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: b})
+	default:
+		lg.ErrorC("Unsupported private key type", "type", fmt.Sprintf("%T", key))
+	}
+
 	keyFile := fmt.Sprintf("certs/%s_key.pem", domain)
 	if fileExists(keyFile) {
 		return
 	}
 	err = os.WriteFile(keyFile, keyPEM, 0600)
 	if lg.CheckError(err) {
-		log.Fatalf("Failed to save private key: %v", err)
+		lg.Printfs("Failed to save private key: %v\n", err)
+		return
 	}
 	lg.Printfs("Private key file for %s saved successfully.\n", domain)
 }
