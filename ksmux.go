@@ -6,13 +6,14 @@ package ksmux
 
 import (
 	"context"
-	"crypto/tls"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
 	"strings"
 	"sync"
 
+	"github.com/kamalshkeir/certmagic"
 	"github.com/kamalshkeir/ksmux/ws"
 	"github.com/kamalshkeir/lg"
 )
@@ -67,6 +68,7 @@ type Router struct {
 	paramsPool  sync.Pool
 	maxParams   uint16
 	middlewares []func(http.Handler) http.Handler
+	secure      bool
 	// If enabled, adds the matched route path onto the http.Request context
 	// before invoking the handler.
 	// The matched route path is only added to handlers of routes that were
@@ -523,6 +525,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		defer r.recv(w, req)
 	}
 
+	if r.secure {
+		w.Header().Set("Strict-Transport-Security", "max-age=15768000 ; includeSubDomains")
+	}
 	path := req.URL.Path
 
 	if root := r.trees[req.Method]; root != nil {
@@ -691,6 +696,7 @@ func (router *Router) Run(addr string) {
 
 // RunTLS HTTPS server using certificates
 func (router *Router) RunTLS(addr, cert, certKey string) {
+	router.secure = strings.Contains(addr, "443") || !strings.Contains(addr, ":")
 	if ADDRESS != addr {
 		sp := strings.Split(addr, ":")
 		if len(sp) > 0 {
@@ -737,6 +743,7 @@ func (router *Router) RunTLS(addr, cert, certKey string) {
 
 // RunAutoTLS HTTPS server generate certificates and handle renew
 func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
+	router.secure = strings.Contains(domainName, "443") || !strings.Contains(domainName, ":")
 	if !strings.Contains(domainName, ":") {
 		err := checkDomain(domainName)
 		if err == nil {
@@ -769,17 +776,35 @@ func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
 			SUBDOMAINS = append(SUBDOMAINS, d)
 		}
 	}
-	// graceful Shutdown server
-	certManager, tlsconf := router.createServerCerts(DOMAIN, SUBDOMAINS...)
-	if certManager == nil || tlsconf == nil {
-		lg.Fatal("unable to create tlsconfig")
-		return
-	}
-	router.initAutoServer(tlsconf)
-	go http.ListenAndServe(":80", certManager.HTTPHandler(nil))
+
 	go func() {
 		lg.Printfs("mgrunning on https://%s , subdomains: %v\n", domainName, SUBDOMAINS)
-		if err := router.Server.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
+		certmagic.DefaultACME.Agreed = true
+		certmagic.DefaultACME.Email = os.Getenv("SSL_EMAIL")
+		if v := os.Getenv("SSL_MODE"); v != "" && v == "dev" {
+			certmagic.DefaultACME.CA = certmagic.LetsEncryptStagingCA
+		}
+		dd := []string{domainName}
+		if strings.Contains(domainName, ":") {
+			host, _, err := net.SplitHostPort(domainName)
+			lg.CheckError(err)
+			dd[0] = host
+		}
+		dd = append(dd, SUBDOMAINS...)
+		var h http.Handler
+		if len(router.middlewares) > 0 {
+			for i := range router.middlewares {
+				if i == 0 {
+					h = router.middlewares[0](router)
+				} else {
+					h = router.middlewares[i](h)
+				}
+			}
+		} else {
+			h = router
+		}
+
+		if err := certmagic.HTTPS(dd, h); err != http.ErrServerClosed {
 			lg.Error("Unable to run the server", "err", err)
 		} else {
 			lg.Printfs("grServer Off !\n")
@@ -800,29 +825,4 @@ func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
 		OnDocsGenerationReady()
 	}
 	router.gracefulShutdown()
-}
-
-func (router *Router) initAutoServer(tlsconf *tls.Config) {
-	var h http.Handler
-	if len(router.middlewares) > 0 {
-		for i := range router.middlewares {
-			if i == 0 {
-				h = router.middlewares[0](router)
-			} else {
-				h = router.middlewares[i](h)
-			}
-		}
-	} else {
-		h = router
-	}
-	// Setup Server
-	server := http.Server{
-		Addr:         ":" + PORT,
-		Handler:      h,
-		ReadTimeout:  ReadTimeout,
-		WriteTimeout: WriteTimeout,
-		IdleTimeout:  IdleTimeout,
-		TLSConfig:    tlsconf,
-	}
-	router.Server = &server
 }

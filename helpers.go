@@ -6,30 +6,19 @@ package ksmux
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/rsa"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
-	"github.com/kamalshkeir/lg"
-	"golang.org/x/crypto/acme/autocert"
+	"github.com/kamalshkeir/certmagic"
 )
-
-var errPolicyMismatch = errors.New("the host did not match the allowed hosts")
-var AutoCertRegexHostPolicy = false
 
 // Param is a single URL parameter, consisting of a key and a value.
 type Param struct {
@@ -185,9 +174,14 @@ func (router *Router) gracefulShutdown() {
 		if err != nil {
 			return err
 		}
-		err = router.Server.Shutdown(timeout)
-		if err != nil {
-			return err
+		if router.Server != nil {
+			if err := router.Server.Shutdown(timeout); err != nil {
+				return err
+			}
+		} else if certmagic.UsedHTTPServer != nil {
+			if err := certmagic.UsedHTTPServer.Shutdown(timeout); err != nil {
+				return err
+			}
 		}
 		if limiterUsed {
 			close(limiterQuit)
@@ -307,128 +301,6 @@ func GetPrivateIp() string {
 		}
 	}
 	return pIp
-}
-
-func (router *Router) createServerCerts(domainName string, subDomains ...string) (*autocert.Manager, *tls.Config) {
-	uniqueDomains := []string{}
-	domainsToCertify := map[string]bool{}
-	// add domainName
-	err := checkDomain(domainName)
-	if err == nil {
-		domainsToCertify[domainName] = true
-	}
-	// add pIP
-	pIP := GetPrivateIp()
-	if _, ok := domainsToCertify[pIP]; !ok {
-		domainsToCertify[pIP] = true
-	}
-	// add subdomains
-	for _, sub := range subDomains {
-		if _, ok := domainsToCertify[sub]; !ok {
-			domainsToCertify[sub] = true
-		}
-	}
-	for k := range domainsToCertify {
-		uniqueDomains = append(uniqueDomains, k)
-	}
-
-	if len(uniqueDomains) > 0 {
-		m := &autocert.Manager{
-			Prompt:     autocert.AcceptTOS,
-			Cache:      autocert.DirCache("certs"),
-			HostPolicy: autocert.HostWhitelist(uniqueDomains...),
-			Email:      os.Getenv("SSL_EMAIL"),
-		}
-		tlsConfig := m.TLSConfig()
-		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
-		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			// Attempt to retrieve the certificate from the cache
-			certData, err := m.Cache.Get(hello.Context(), hello.ServerName)
-			if err == nil {
-				// Certificate exists, parse it into a *tls.Certificate
-				cert, err := tls.X509KeyPair(certData, nil)
-				if lg.CheckError(err) {
-					return nil, err
-				}
-				return &cert, nil
-			}
-
-			// Certificate does not exist, request a new one
-			cert, err := m.GetCertificate(hello)
-			if lg.CheckError(err) {
-				return nil, err
-			}
-			saveCertificateAndKey(cert)
-			return cert, nil
-		}
-		if AutoCertRegexHostPolicy {
-			sp := strings.Split(domainName, ".")
-			if len(sp) > 2 {
-				domainName = sp[1] + "." + sp[2]
-			}
-			domainNameReg := strings.ReplaceAll(domainName, ".", `\.`)
-			allowedHosts := regexp.MustCompile(`^([a-zA-Z0-9]+(-[a-zA-Z0-9]+)*\.)?` + domainNameReg + `$`)
-			m.HostPolicy = func(_ context.Context, host string) error {
-				if allowedHosts.MatchString(host) {
-					return nil
-				}
-				return errPolicyMismatch
-			}
-		}
-		lg.Printfs("grAuto certified domains: %v\n", uniqueDomains)
-		return m, tlsConfig
-	}
-	return nil, nil
-}
-
-func saveCertificateAndKey(cert *tls.Certificate) {
-	domain := cert.Leaf.Subject.CommonName
-
-	// Save the certificate
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
-	certFile := fmt.Sprintf("certs/%s_cert.pem", domain)
-	if fileExists(certFile) {
-		return
-	}
-	err := os.WriteFile(certFile, certPEM, 0644)
-	if lg.CheckError(err) {
-		lg.ErrorC("Failed to save certificate", "err", err)
-		return
-	}
-
-	// Save the private key
-	var keyPEM []byte
-	switch key := cert.PrivateKey.(type) {
-	case *rsa.PrivateKey:
-		keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	case *ecdsa.PrivateKey:
-		b, err := x509.MarshalECPrivateKey(key)
-		if lg.CheckError(err) {
-			lg.Printfs("Unable to marshal ECDSA private key: %v\n", err)
-		}
-		keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: b})
-	default:
-		lg.ErrorC("Unsupported private key type", "type", fmt.Sprintf("%T", key))
-	}
-
-	keyFile := fmt.Sprintf("certs/%s_key.pem", domain)
-	if fileExists(keyFile) {
-		return
-	}
-	err = os.WriteFile(keyFile, keyPEM, 0600)
-	if lg.CheckError(err) {
-		lg.Printfs("Failed to save private key: %v\n", err)
-		return
-	}
-	lg.Printfs("Private key file for %s saved successfully.\n", domain)
-}
-
-func fileExists(filename string) bool {
-	info, err := os.Stat(filename)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
 }
 
 var copyBufPool = sync.Pool{
