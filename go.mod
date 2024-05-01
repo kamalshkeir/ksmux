@@ -3,7 +3,7 @@ module github.com/kamalshkeir/ksmux
 go 1.22.0
 
 require (
-	github.com/kamalshkeir/certmagic v0.0.2
+	github.com/kamalshkeir/certmagic v0.0.3
 	github.com/kamalshkeir/kencoding v0.0.1
 	github.com/kamalshkeir/kmap v1.1.3
 	github.com/kamalshkeir/lg v0.1.3
