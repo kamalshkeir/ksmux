@@ -6,19 +6,233 @@ package ksmux
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
-	"github.com/kamalshkeir/certmagic"
+	"github.com/kamalshkeir/lg"
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
 )
+
+var AutoCertRegexHostPolicy = false
+var errPolicyMismatch = errors.New("the host did not match the allowed hosts")
+
+func (router *Router) CreateServerCerts(domainName string, subDomains ...string) (*autocert.Manager, *tls.Config) {
+	uniqueDomains := []string{}
+	domainsToCertify := map[string]bool{}
+	// add domainName
+	err := checkDomain(domainName)
+	if err == nil {
+		domainsToCertify[domainName] = true
+	}
+	// add subdomains
+	for _, sub := range subDomains {
+		if _, ok := domainsToCertify[sub]; !ok {
+			domainsToCertify[sub] = true
+		}
+	}
+	for k := range domainsToCertify {
+		uniqueDomains = append(uniqueDomains, k)
+	}
+	if len(uniqueDomains) > 0 {
+		m := &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			Cache:      autocert.DirCache("certs"),
+			HostPolicy: autocert.HostWhitelist(uniqueDomains...),
+			Email:      os.Getenv("SSL_EMAIL"),
+		}
+		if v := os.Getenv("SSL_MODE"); v != "" && v == "dev" {
+			m.Client = &acme.Client{
+				DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
+			}
+		}
+
+		tlsConfig := m.TLSConfig()
+		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
+		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			// Attempt to retrieve the certificate from the cache
+			certData, err := m.Cache.Get(hello.Context(), hello.ServerName)
+			if err == nil {
+				// Certificate exists, parse it into a *tls.Certificate
+				cert, err := tls.X509KeyPair(certData, nil)
+				if err == nil {
+					return &cert, nil
+				}
+			}
+
+			// Certificate does not exist, request a new one
+			cert, err := m.GetCertificate(hello)
+			if lg.CheckError(err) {
+				return nil, err
+			}
+			saveCertificateAndKey(cert)
+			return cert, nil
+		}
+		if AutoCertRegexHostPolicy {
+			sp := strings.Split(domainName, ".")
+			if len(sp) > 2 {
+				domainName = sp[1] + "." + sp[2]
+			}
+			domainNameReg := strings.ReplaceAll(domainName, ".", `\.`)
+			allowedHosts := regexp.MustCompile(`^([a-zA-Z0-9]+(-[a-zA-Z0-9]+)*\.)?` + domainNameReg + `$`)
+			m.HostPolicy = func(_ context.Context, host string) error {
+				if allowedHosts.MatchString(host) {
+					return nil
+				}
+				return errPolicyMismatch
+			}
+		}
+		lg.Printfs("grAuto certified domains: %v\n", uniqueDomains)
+		return m, tlsConfig
+	}
+	return nil, nil
+}
+
+func CopyFile(src, dst string, BUFFERSIZE int64) error {
+	sourceFileStat, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if !sourceFileStat.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", src)
+	}
+
+	source, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	_, err = os.Stat(dst)
+	if err == nil {
+		return fmt.Errorf("file %s already exists", dst)
+	}
+
+	destination, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destination.Close()
+
+	buf := make([]byte, BUFFERSIZE)
+	for {
+		n, err := source.Read(buf)
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if n == 0 {
+			break
+		}
+
+		if _, err := destination.Write(buf[:n]); err != nil {
+			return err
+		}
+	}
+	return err
+}
+
+func SetSSLMode(ProdOrDev string) {
+	switch ProdOrDev {
+	case "dev", "Dev", "DEV":
+		os.Setenv("SSL_MODE", "dev")
+	default:
+		os.Setenv("SSL_MODE", "prod")
+	}
+}
+
+func SetSSLEmail(email string) {
+	os.Setenv("SSL_EMAIL", email)
+}
+
+func saveCertificateAndKey(cert *tls.Certificate) {
+	if cert.Leaf == nil {
+		return
+	}
+	domain := cert.Leaf.Subject.CommonName
+
+	// Determine the prefix based on the SSL_MODE environment variable
+	var prefix string
+	if v := os.Getenv("SSL_MODE"); v != "" && v == "dev" {
+		prefix = "staging"
+	} else {
+		prefix = "prod"
+	}
+
+	if !isCertificateValid("certs/"+prefix+"_"+domain, 1) {
+		// Certificate is older than 2 months, delete and return
+		err := CopyFile("certs/"+domain, "certs/"+prefix+"_"+domain, 1024*1024)
+		if lg.CheckError(err) {
+			lg.ErrorC("Failed to copy main certificate", "err", err)
+		}
+	}
+
+	// Save the certificate with the appropriate prefix and creation date
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+	certFile := fmt.Sprintf("certs/%s_%s_cert.pem", prefix, domain)
+	if !isCertificateValid(certFile, 1) {
+		// Certificate is older than 1 months, delete and return
+		_ = os.Remove(certFile)
+	}
+
+	err := os.WriteFile(certFile, certPEM, 0644)
+	if lg.CheckError(err) {
+		lg.ErrorC("Failed to save certificate", "err", err)
+		return
+	}
+
+	// Save the private key with the same prefix and creation date
+	var keyPEM []byte
+	switch key := cert.PrivateKey.(type) {
+	case *rsa.PrivateKey:
+		keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	case *ecdsa.PrivateKey:
+		b, err := x509.MarshalECPrivateKey(key)
+		if lg.CheckError(err) {
+			lg.Printfs("Unable to marshal ECDSA private key: %v\n", err)
+		}
+		keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: b})
+	default:
+		lg.ErrorC("Unsupported private key type", "type", fmt.Sprintf("%T", key))
+	}
+
+	keyFile := fmt.Sprintf("certs/%s_%s_key.pem", prefix, domain)
+	if !isCertificateValid(keyFile, 1) {
+		_ = os.Remove(keyFile)
+	}
+	err = os.WriteFile(keyFile, keyPEM, 0600)
+	if lg.CheckError(err) {
+		lg.Printfs("Failed to save private key: %v\n", err)
+		return
+	}
+	lg.Printfs("Certificate %s and private key %s files for %s saved successfully.\n", certFile, keyFile, domain)
+}
+
+func isCertificateValid(certFile string, monthN int) bool {
+	info, err := os.Stat(certFile)
+	if err != nil {
+		lg.Printfs("Failed to get certificate file info: %v\n", err)
+		return false
+	}
+	// Check if the certificate file is older than 2 months
+	twoMonthsAgo := time.Now().AddDate(0, -monthN, 0)
+	return info.ModTime().After(twoMonthsAgo)
+}
 
 // Param is a single URL parameter, consisting of a key and a value.
 type Param struct {
@@ -178,11 +392,12 @@ func (router *Router) gracefulShutdown() {
 			if err := router.Server.Shutdown(timeout); err != nil {
 				return err
 			}
-		} else if certmagic.UsedHTTPServer != nil {
-			if err := certmagic.UsedHTTPServer.Shutdown(timeout); err != nil {
-				return err
-			}
 		}
+		// else if certmagic.UsedHTTPServer != nil {
+		// 	if err := certmagic.UsedHTTPServer.Shutdown(timeout); err != nil {
+		// 		return err
+		// 	}
+		// }
 		if limiterUsed {
 			close(limiterQuit)
 		}
