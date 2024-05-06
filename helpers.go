@@ -174,12 +174,14 @@ func saveCertificateAndKey(cert *tls.Certificate) {
 		prefix = "prod"
 	}
 
-	if !isCertificateValid("certs/"+prefix+"_"+domain, 1) {
+	if !isCertificateValid("certs/"+prefix+"_"+domain, 2) {
 		// Certificate is older than 2 months, delete and return
 		err := CopyFile("certs/"+domain, "certs/"+prefix+"_"+domain, 1024*1024)
 		if lg.CheckError(err) {
 			lg.ErrorC("Failed to copy main certificate", "err", err)
 		}
+	} else {
+		return
 	}
 
 	// Save the certificate with the appropriate prefix and creation date
@@ -188,6 +190,8 @@ func saveCertificateAndKey(cert *tls.Certificate) {
 	if !isCertificateValid(certFile, 1) {
 		// Certificate is older than 1 months, delete and return
 		_ = os.Remove(certFile)
+	} else {
+		return
 	}
 
 	err := os.WriteFile(certFile, certPEM, 0644)
