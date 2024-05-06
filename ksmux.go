@@ -767,15 +767,13 @@ func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
 			SUBDOMAINS = proxies.Keys()
 		}
 	}
-
+	// add pIP
+	pIP := GetPrivateIp()
+	if !SliceContains(subdomains, pIP) {
+		SUBDOMAINS = append(SUBDOMAINS, pIP)
+	}
 	for _, d := range subdomains {
-		found := false
-		for _, dd := range SUBDOMAINS {
-			if dd == d {
-				found = true
-			}
-		}
-		if !found {
+		if !SliceContains(SUBDOMAINS, d) {
 			SUBDOMAINS = append(SUBDOMAINS, d)
 		}
 	}
