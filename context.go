@@ -59,22 +59,8 @@ func (c *Context) Stream(response string) error {
 	return nil
 }
 
-func (c *Context) IsPusher() bool {
-	_, ok := c.ResponseWriter.(http.Pusher)
-	return ok
-}
-
 func (c *Context) WithPushOptions(opts *http.PushOptions) {
 	c.pushOptions = opts
-}
-
-func (c *Context) Push(paths ...string) {
-	pusher, ok := c.ResponseWriter.(http.Pusher)
-	if ok {
-		for _, p := range paths {
-			pusher.Push(p, c.pushOptions)
-		}
-	}
 }
 
 func (c *Context) UpgradeConnection() (*ws.Conn, error) {
@@ -97,6 +83,38 @@ func (c *Context) Context() context.Context {
 	return c.Request.Context()
 }
 
+type EarlyHintType string
+
+var (
+	EarlyHint_OBJECT   EarlyHintType = "object"
+	EarlyHint_IMAGE    EarlyHintType = "image"
+	EarlyHint_AUDIO    EarlyHintType = "audio"
+	EarlyHint_TRACK    EarlyHintType = "track"
+	EarlyHint_VIDEO    EarlyHintType = "video"
+	EarlyHint_DOCUMENT EarlyHintType = "document"
+	EarlyHint_EMBED    EarlyHintType = "embed"
+	EarlyHint_STYLE    EarlyHintType = "style"
+	EarlyHint_SCRIPT   EarlyHintType = "script"
+	EarlyHint_FETCH    EarlyHintType = "fetch"
+	EarlyHint_FONT     EarlyHintType = "font"
+	EarlyHint_WORKER   EarlyHintType = "worker"
+)
+
+type EarlyHint struct {
+	Type EarlyHintType
+	URL  string
+	Rel  string
+}
+
+func (c *Context) EarlyHint(hints ...EarlyHint) {
+	for _, hint := range hints {
+		c.AddHeader("Early-Data", "<"+hint.URL+">; rel="+hint.Rel+"; as="+string(hint.Type))
+	}
+	if len(hints) > 0 {
+		c.SetStatus(http.StatusEarlyHints)
+	}
+}
+
 // Status set status to context, will not be writed to header
 func (c *Context) Status(code int) *Context {
 	c.status = code
@@ -108,7 +126,7 @@ func (c *Context) Text(body string) {
 	if c.status == 0 {
 		c.status = 200
 	}
-	c.WriteHeader(c.status)
+	c.SetStatus(c.status)
 	_, err := c.ResponseWriter.Write([]byte(body))
 	lg.CheckError(err)
 }
@@ -191,7 +209,7 @@ func (c *Context) SetHeader(key, value string) {
 // SetHeader Set the header value to the new value, old removed
 func (c *Context) SetStatus(statusCode int) {
 	c.status = statusCode
-	c.WriteHeader(statusCode)
+	c.ResponseWriter.WriteHeader(statusCode)
 }
 
 // QueryParam get query param
@@ -205,7 +223,7 @@ func (c *Context) Json(data any) {
 	if c.status == 0 {
 		c.status = 200
 	}
-	c.WriteHeader(c.status)
+	c.SetStatus(c.status)
 	by, err := json.Marshal(data)
 	if !lg.CheckError(err) {
 		_, err = c.ResponseWriter.Write(by)
@@ -219,7 +237,7 @@ func (c *Context) JsonIndent(data any) {
 	if c.status == 0 {
 		c.status = 200
 	}
-	c.WriteHeader(c.status)
+	c.SetStatus(c.status)
 	by, err := json.MarshalIndent(data, "", " \t")
 	if !lg.CheckError(err) {
 		_, err = c.ResponseWriter.Write(by)
@@ -253,7 +271,7 @@ func (c *Context) Html(template_name string, data map[string]any) {
 	if c.status == 0 {
 		c.status = 200
 	}
-	c.WriteHeader(c.status)
+	c.SetStatus(c.status)
 
 	_, err = buff.WriteTo(c.ResponseWriter)
 	if lg.CheckError(err) {
@@ -309,7 +327,7 @@ func (c *Context) NamedRawHtml(rawTemplateName string, data map[string]any) erro
 	if c.status == 0 {
 		c.status = 200
 	}
-	c.WriteHeader(c.status)
+	c.SetStatus(c.status)
 	_, err := buff.WriteTo(c.ResponseWriter)
 	if lg.CheckError(err) {
 		return err
@@ -342,7 +360,7 @@ func (c *Context) RawHtml(rawTemplate string, data map[string]any) error {
 	if c.status == 0 {
 		c.status = 200
 	}
-	c.WriteHeader(c.status)
+	c.SetStatus(c.status)
 	_, err = buff.WriteTo(c.ResponseWriter)
 	if lg.CheckError(err) {
 		return err

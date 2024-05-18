@@ -35,8 +35,11 @@ func BeforeRenderHtml(uniqueName string, fn func(c *Context, data *map[string]an
 	beforeRenderHtmlSetted = true
 }
 
-func (router *Router) LocalStatics(dirPath, webPath string, handlerMiddlewares ...func(handler Handler) Handler) {
+func (router *Router) LocalStatics(dirPath, webPath string, handlerMiddlewares ...func(handler Handler) Handler) error {
 	dirPath = filepath.ToSlash(dirPath)
+	if _, err := os.Stat(dirPath); err != nil {
+		return err
+	}
 	if webPath[0] != '/' {
 		webPath = "/" + webPath
 	}
@@ -48,10 +51,14 @@ func (router *Router) LocalStatics(dirPath, webPath string, handlerMiddlewares .
 		handler = mid(handler)
 	}
 	router.Get(webPath+"/*path", handler)
+	return nil
 }
 
-func (router *Router) EmbededStatics(embeded embed.FS, pathLocalDir, webPath string, handlerMiddlewares ...func(handler Handler) Handler) {
+func (router *Router) EmbededStatics(embeded embed.FS, pathLocalDir, webPath string, handlerMiddlewares ...func(handler Handler) Handler) error {
 	pathLocalDir = filepath.ToSlash(pathLocalDir)
+	if _, err := os.Stat(pathLocalDir); err != nil {
+		return err
+	}
 	if webPath[0] != '/' {
 		webPath = "/" + webPath
 	}
@@ -59,7 +66,7 @@ func (router *Router) EmbededStatics(embeded embed.FS, pathLocalDir, webPath str
 	toembed_dir, err := fs.Sub(embeded, pathLocalDir)
 	if err != nil {
 		lg.Error("error serving embeded dir", "err", err)
-		return
+		return err
 	}
 	toembed_root := http.FileServer(http.FS(toembed_dir))
 	handler := func(c *Context) {
@@ -69,6 +76,7 @@ func (router *Router) EmbededStatics(embeded embed.FS, pathLocalDir, webPath str
 		handler = mid(handler)
 	}
 	router.Get(webPath+"/*path", handler)
+	return nil
 }
 
 func (router *Router) LocalTemplates(pathToDir string) error {

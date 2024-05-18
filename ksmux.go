@@ -718,7 +718,8 @@ func (router *Router) RunTLS(addr, cert, certKey string) {
 	IsTLS = true
 	// graceful Shutdown server
 	router.initServer(ADDRESS)
-
+	router.Server.TLSConfig.MinVersion = tls.VersionTLS12
+	router.Server.TLSConfig.NextProtos = append([]string{"h2", "http/1.1"}, router.Server.TLSConfig.NextProtos...)
 	go func() {
 		lg.Printfs("mgrunning on https://%s\n", ADDRESS)
 		if err := router.Server.ListenAndServeTLS(cert, certKey); err != http.ErrServerClosed {
@@ -768,10 +769,10 @@ func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
 		}
 	}
 	// add pIP
-	// pIP := GetPrivateIp()
-	// if !SliceContains(subdomains, pIP) {
-	// 	SUBDOMAINS = append(SUBDOMAINS, pIP)
-	// }
+	pIP := GetPrivateIp()
+	if !SliceContains(subdomains, pIP) {
+		SUBDOMAINS = append(SUBDOMAINS, pIP)
+	}
 	for _, d := range subdomains {
 		if !SliceContains(SUBDOMAINS, d) {
 			SUBDOMAINS = append(SUBDOMAINS, d)
@@ -792,36 +793,6 @@ func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
 		} else {
 			lg.Printfs("grServer Off !\n")
 		}
-		// certmagic.DefaultACME.Agreed = true
-		// certmagic.DefaultACME.Email = os.Getenv("SSL_EMAIL")
-		// if v := os.Getenv("SSL_MODE"); v != "" && v == "dev" {
-		// 	certmagic.DefaultACME.CA = certmagic.LetsEncryptStagingCA
-		// }
-		// dd := []string{domainName}
-		// if strings.Contains(domainName, ":") {
-		// 	host, _, err := net.SplitHostPort(domainName)
-		// 	lg.CheckError(err)
-		// 	dd[0] = host
-		// }
-		// dd = append(dd, SUBDOMAINS...)
-		// var h http.Handler
-		// if len(router.middlewares) > 0 {
-		// 	for i := range router.middlewares {
-		// 		if i == 0 {
-		// 			h = router.middlewares[0](router)
-		// 		} else {
-		// 			h = router.middlewares[i](h)
-		// 		}
-		// 	}
-		// } else {
-		// 	h = router
-		// }
-
-		// if err := certmagic.HTTPS(dd, h); err != http.ErrServerClosed {
-		// 	lg.Error("Unable to run the server", "err", err)
-		// } else {
-		// 	lg.Printfs("grServer Off !\n")
-		// }
 	}()
 	if generateSwaggerJson {
 		DocsGeneralDefaults.Host = ADDRESS

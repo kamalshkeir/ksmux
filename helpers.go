@@ -63,6 +63,7 @@ func (router *Router) CreateServerCerts(domainName string, subDomains ...string)
 		}
 
 		tlsConfig := m.TLSConfig()
+		tlsConfig.MinVersion = tls.VersionTLS12
 		tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
 		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			// Attempt to retrieve the certificate from the cache
