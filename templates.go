@@ -56,9 +56,6 @@ func (router *Router) LocalStatics(dirPath, webPath string, handlerMiddlewares .
 
 func (router *Router) EmbededStatics(embeded embed.FS, pathLocalDir, webPath string, handlerMiddlewares ...func(handler Handler) Handler) error {
 	pathLocalDir = filepath.ToSlash(pathLocalDir)
-	if _, err := os.Stat(pathLocalDir); err != nil {
-		return err
-	}
 	if webPath[0] != '/' {
 		webPath = "/" + webPath
 	}
