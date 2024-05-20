@@ -28,8 +28,8 @@ var (
 	}
 	// context
 	MultipartSize          = 10 << 20
-	beforeRenderHtml       = kmap.New[string, func(c *Context, data *map[string]any)](false)
-	rawTemplates           = kmap.New[string, *template.Template](false)
+	beforeRenderHtml       = kmap.New[string, func(c *Context, data *map[string]any)]()
+	rawTemplates           = kmap.New[string, *template.Template]()
 	beforeRenderHtmlSetted = false
 	// docs
 	DocsOutJson           = "."
@@ -48,5 +48,5 @@ var (
 	COOKIES_SECURE   = true
 	// proxy
 	proxyUsed bool
-	proxies   = kmap.New[string, http.Handler](false)
+	proxies   = kmap.New[string, http.Handler]()
 )

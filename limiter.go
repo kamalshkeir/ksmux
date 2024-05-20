@@ -16,7 +16,7 @@ type limiterClient struct {
 }
 
 var (
-	limited          = kmap.New[string, *limiterClient](false)
+	limited          = kmap.New[string, *limiterClient]()
 	limiterQuit      chan struct{}
 	limiterUsed      = false
 	defCheckEvery    = 5 * time.Minute
