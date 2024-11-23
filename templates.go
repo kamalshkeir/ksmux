@@ -28,6 +28,7 @@ import (
 )
 
 var allTemplates = template.New("all_templates")
+var tempFunc func() error
 
 // BeforeRenderHtml executed before every html render, you can use reqCtx.Value(key).(type.User) for example and add data to templates globaly
 func BeforeRenderHtml(uniqueName string, fn func(c *Context, data *map[string]any)) {
@@ -77,58 +78,65 @@ func (router *Router) EmbededStatics(embeded embed.FS, pathLocalDir, webPath str
 }
 
 func (router *Router) LocalTemplates(pathToDir string) error {
-	cleanRoot := filepath.ToSlash(pathToDir)
-	pfx := len(cleanRoot) + 1
+	tempFunc = func() error {
+		cleanRoot := filepath.ToSlash(pathToDir)
+		pfx := len(cleanRoot) + 1
 
-	err := filepath.Walk(cleanRoot, func(path string, info os.FileInfo, e1 error) error {
-		if !info.IsDir() && strings.HasSuffix(path, ".html") {
-			if e1 != nil {
-				return e1
+		err := filepath.Walk(cleanRoot, func(path string, info os.FileInfo, e1 error) error {
+			if !info.IsDir() && strings.HasSuffix(path, ".html") {
+				if e1 != nil {
+					return e1
+				}
+
+				b, e2 := os.ReadFile(path)
+				if e2 != nil {
+					return e2
+				}
+				name := filepath.ToSlash(path[pfx:])
+				t := allTemplates.New(name).Funcs(functions)
+				_, e2 = t.Parse(string(b))
+				if e2 != nil {
+					return e2
+				}
 			}
 
-			b, e2 := os.ReadFile(path)
-			if e2 != nil {
-				return e2
-			}
-			name := filepath.ToSlash(path[pfx:])
-			t := allTemplates.New(name).Funcs(functions)
-			_, e2 = t.Parse(string(b))
-			if e2 != nil {
-				return e2
-			}
-		}
+			return nil
+		})
 
-		return nil
-	})
-
+		return err
+	}
+	err := tempFunc()
 	return err
 }
 
 func (router *Router) EmbededTemplates(template_embed embed.FS, rootDir string) error {
-	cleanRoot := filepath.ToSlash(rootDir)
-	pfx := len(cleanRoot) + 1
+	tempFunc = func() error {
+		cleanRoot := filepath.ToSlash(rootDir)
+		pfx := len(cleanRoot) + 1
 
-	err := fs.WalkDir(template_embed, cleanRoot, func(path string, info fs.DirEntry, e1 error) error {
-		if lg.CheckError(e1) {
-			return e1
-		}
-		if !info.IsDir() && strings.HasSuffix(path, ".html") {
-			b, e2 := template_embed.ReadFile(path)
-			if lg.CheckError(e2) {
-				return e2
+		err := fs.WalkDir(template_embed, cleanRoot, func(path string, info fs.DirEntry, e1 error) error {
+			if lg.CheckError(e1) {
+				return e1
+			}
+			if !info.IsDir() && strings.HasSuffix(path, ".html") {
+				b, e2 := template_embed.ReadFile(path)
+				if lg.CheckError(e2) {
+					return e2
+				}
+
+				name := filepath.ToSlash(path[pfx:])
+				t := allTemplates.New(name).Funcs(functions)
+				_, e3 := t.Parse(string(b))
+				if lg.CheckError(e3) {
+					return e2
+				}
 			}
 
-			name := filepath.ToSlash(path[pfx:])
-			t := allTemplates.New(name).Funcs(functions)
-			_, e3 := t.Parse(string(b))
-			if lg.CheckError(e3) {
-				return e2
-			}
-		}
-
-		return nil
-	})
-
+			return nil
+		})
+		return err
+	}
+	err := tempFunc()
 	return err
 }
 
@@ -152,6 +160,7 @@ func NewFuncMap(funcMap map[string]any) {
 			functions[k] = v
 		}
 	}
+	lg.CheckError(tempFunc())
 }
 
 func (router *Router) NewFuncMap(funcMap map[string]any) {
@@ -162,6 +171,7 @@ func (router *Router) NewFuncMap(funcMap map[string]any) {
 			functions[k] = v
 		}
 	}
+	lg.CheckError(tempFunc())
 }
 
 func (router *Router) NewTemplateFunc(funcName string, function any) {
@@ -170,6 +180,58 @@ func (router *Router) NewTemplateFunc(funcName string, function any) {
 	} else {
 		functions[funcName] = function
 	}
+	lg.CheckError(tempFunc())
+}
+
+type templateMap map[string]any
+
+func (t templateMap) Get(key string) any {
+	if v, ok := t[key]; ok {
+		return v
+	}
+	return nil
+}
+
+func (t templateMap) Set(kvs ...any) bool {
+	if len(kvs)%2 != 0 {
+		lg.Error(fmt.Sprintf("kvs in mapKV template func is not even: %v with length %d", kvs, len(kvs)))
+		return false
+	}
+	for i := 0; i < len(kvs); i += 2 {
+		key, ok := kvs[i].(string)
+		if !ok {
+			lg.Error(fmt.Sprintf("argument at position %d must be a string (key)", i))
+			return false
+		}
+
+		t[key] = kvs[i+1]
+	}
+	return true
+}
+
+func (t templateMap) Delete(k string) bool {
+	delete(t, k)
+	return true
+}
+
+func (t templateMap) Keys() []string {
+	res := make([]string, 0, len(t))
+	for k := range t {
+		res = append(res, k)
+	}
+	return res
+}
+func (t templateMap) Values() []any {
+	res := make([]any, 0, len(t))
+	for _, v := range t {
+		res = append(res, v)
+	}
+	return res
+}
+
+func (t templateMap) Exists(k string) bool {
+	_, ok := t[k]
+	return ok
 }
 
 /* FUNC MAPS */
@@ -200,6 +262,23 @@ var functions = template.FuncMap{
 		}
 		return res
 	},
+	"newMap": func(kvs ...any) templateMap {
+		res := templateMap{}
+		if len(kvs)%2 != 0 {
+			lg.Error(fmt.Sprintf("kvs in mapKV template func is not even: %v with length %d", kvs, len(kvs)))
+			return res
+		}
+		for i := 0; i < len(kvs); i += 2 {
+			key, ok := kvs[i].(string)
+			if !ok {
+				lg.Error(fmt.Sprintf("argument at position %d must be a string (key)", i))
+				res["error"] = fmt.Errorf("argument at position %d must be a string (key)", i).Error()
+				return res
+			}
+			res.Set(key, kvs[i+1])
+		}
+		return res
+	},
 	"startWith": func(str string, substrings ...string) bool {
 		for _, substr := range substrings {
 			if strings.HasPrefix(strings.ToLower(str), substr) {
@@ -216,7 +295,7 @@ var functions = template.FuncMap{
 		}
 		return false
 	},
-	"jsonIndented": func(data any) string {
+	"json": func(data any) string {
 		d, err := json.MarshalIndent(data, "", "\t")
 		if err != nil {
 			d = []byte("cannot marshal data")
