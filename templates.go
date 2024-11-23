@@ -160,7 +160,9 @@ func NewFuncMap(funcMap map[string]any) {
 			functions[k] = v
 		}
 	}
-	lg.CheckError(tempFunc())
+	if allTemplates != nil {
+		lg.CheckError(tempFunc())
+	}
 }
 
 func (router *Router) NewFuncMap(funcMap map[string]any) {
@@ -171,7 +173,9 @@ func (router *Router) NewFuncMap(funcMap map[string]any) {
 			functions[k] = v
 		}
 	}
-	lg.CheckError(tempFunc())
+	if allTemplates != nil {
+		lg.CheckError(tempFunc())
+	}
 }
 
 func (router *Router) NewTemplateFunc(funcName string, function any) {
@@ -180,7 +184,9 @@ func (router *Router) NewTemplateFunc(funcName string, function any) {
 	} else {
 		functions[funcName] = function
 	}
-	lg.CheckError(tempFunc())
+	if allTemplates != nil {
+		lg.CheckError(tempFunc())
+	}
 }
 
 type templateMap map[string]any
