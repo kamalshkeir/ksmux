@@ -424,6 +424,20 @@ func (c *Context) SetKey(key string, value any) {
 	c.Request = c.Request.WithContext(ctx)
 }
 
+func (c *Context) Error(status int, errorMsg string) {
+	http.Error(c.ResponseWriter, errorMsg, status)
+}
+
+func (c *Context) Success(successMsg any, statusCode ...int) {
+	status := 200
+	if len(statusCode) > 0 {
+		status = statusCode[0]
+	}
+	c.Status(status).Json(map[string]any{
+		"success": successMsg,
+	})
+}
+
 func (c *Context) Flush() bool {
 	f, ok := c.ResponseWriter.(http.Flusher)
 	if ok {
@@ -541,14 +555,6 @@ func (c *Context) ParseMultipartForm(size ...int64) (formData url.Values, formFi
 // SaveFile save file to path
 func (c *Context) SaveFile(fileheader *multipart.FileHeader, path string) error {
 	return SaveMultipartFile(fileheader, path)
-}
-
-// Error send json error
-func (c *Context) Error(code int, message string) {
-	c.Status(code).Json(map[string]any{
-		"error":  message,
-		"status": code,
-	})
 }
 
 // SaveMultipartFile Save MultipartFile
