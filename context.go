@@ -425,7 +425,7 @@ func (c *Context) SetKey(key string, value any) {
 }
 
 func (c *Context) Error(errorMsg any) {
-	if c.status == 0 {
+	if c.status == 0 || c.status == 200 {
 		c.status = 400
 	}
 	c.Status(c.status).Json(map[string]any{
