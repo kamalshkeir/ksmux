@@ -15,12 +15,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/kamalshkeir/kencoding/json"
 	"github.com/kamalshkeir/ksmux/ws"
+	"github.com/kamalshkeir/kstrct"
 	"github.com/kamalshkeir/lg"
 )
 
@@ -403,6 +405,20 @@ func (c *Context) GetKey(key string) (any, bool) {
 	}
 }
 
+// GetKeyAs return request context value for given key
+func (c *Context) GetKeyAs(key string, ptrStruct any) bool {
+	v := c.Request.Context().Value(ContextKey(key))
+	if v != nil {
+		rv := reflect.ValueOf(ptrStruct)
+		if err := kstrct.SetReflectFieldValue(rv, v); err != nil {
+			return false
+		}
+		return true
+	} else {
+		return false
+	}
+}
+
 func (c *Context) SetKey(key string, value any) {
 	ctx := context.WithValue(c.Request.Context(), ContextKey(key), value)
 	c.Request = c.Request.WithContext(ctx)
@@ -427,10 +443,23 @@ func (c *Context) BodyJson() map[string]any {
 		lg.Error("empty body EOF")
 		return nil
 	} else if err != nil {
-		lg.Error("error BodyJson: %v", err)
+		lg.Error("error BodyJson", "err", err)
 		return nil
 	} else {
 		return d
+	}
+}
+
+func (c *Context) BodyStruct(dest any) error {
+	defer c.Request.Body.Close()
+	d := map[string]any{}
+	dec := json.NewDecoder(c.Request.Body)
+	if err := dec.Decode(&d); err == io.EOF {
+		return fmt.Errorf("empty body EOF")
+	} else if err != nil {
+		return err
+	} else {
+		return kstrct.FillFromMap(dest, d)
 	}
 }
 
