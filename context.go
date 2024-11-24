@@ -424,18 +424,43 @@ func (c *Context) SetKey(key string, value any) {
 	c.Request = c.Request.WithContext(ctx)
 }
 
-func (c *Context) Error(status int, errorMsg string) {
-	http.Error(c.ResponseWriter, errorMsg, status)
+func (c *Context) Error(errorMsg any) {
+	if c.status == 0 {
+		c.status = 400
+	}
+	c.Status(c.status).Json(map[string]any{
+		"error": errorMsg,
+	})
 }
 
-func (c *Context) Success(successMsg any, statusCode ...int) {
-	status := 200
-	if len(statusCode) > 0 {
-		status = statusCode[0]
+func (c *Context) Success(successMsg any) {
+	if c.status == 0 {
+		c.status = 200
 	}
-	c.Status(status).Json(map[string]any{
+	c.Status(c.status).Json(map[string]any{
 		"success": successMsg,
 	})
+}
+
+func (c *Context) Return(kvs ...any) {
+	if c.status == 0 {
+		c.status = 200
+	}
+	res := map[string]any{}
+	for i, v := range kvs {
+		if i%2 == 0 {
+			if vv, ok := v.(string); !ok {
+				lg.ErrorC("expected key to be string in c.Return kv pairs")
+				return
+			} else {
+				if i+1 < len(kvs) {
+					value := kvs[i+1]
+					res[vv] = value
+				}
+			}
+		}
+	}
+	c.Status(c.status).Json(res)
 }
 
 func (c *Context) Flush() bool {
