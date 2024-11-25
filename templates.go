@@ -37,6 +37,7 @@ func BeforeRenderHtml(uniqueName string, fn func(c *Context, data *map[string]an
 }
 
 func (router *Router) LocalStatics(dirPath, webPath string, handlerMiddlewares ...func(handler Handler) Handler) error {
+	dirPath = strings.TrimSuffix(dirPath, "/")
 	dirPath = filepath.ToSlash(dirPath)
 	if _, err := os.Stat(dirPath); err != nil {
 		return err
@@ -56,6 +57,7 @@ func (router *Router) LocalStatics(dirPath, webPath string, handlerMiddlewares .
 }
 
 func (router *Router) EmbededStatics(embeded embed.FS, pathLocalDir, webPath string, handlerMiddlewares ...func(handler Handler) Handler) error {
+	pathLocalDir = strings.TrimSuffix(pathLocalDir, "/")
 	pathLocalDir = filepath.ToSlash(pathLocalDir)
 	if webPath[0] != '/' {
 		webPath = "/" + webPath
@@ -79,6 +81,7 @@ func (router *Router) EmbededStatics(embeded embed.FS, pathLocalDir, webPath str
 
 func (router *Router) LocalTemplates(pathToDir string) error {
 	tempFunc = func() error {
+		pathToDir = strings.TrimSuffix(pathToDir, "/")
 		cleanRoot := filepath.ToSlash(pathToDir)
 		pfx := len(cleanRoot) + 1
 
@@ -111,6 +114,7 @@ func (router *Router) LocalTemplates(pathToDir string) error {
 
 func (router *Router) EmbededTemplates(template_embed embed.FS, rootDir string) error {
 	tempFunc = func() error {
+		rootDir = strings.TrimSuffix(rootDir, "/")
 		cleanRoot := filepath.ToSlash(rootDir)
 		pfx := len(cleanRoot) + 1
 
