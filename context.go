@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -409,8 +408,7 @@ func (c *Context) GetKey(key string) (any, bool) {
 func (c *Context) GetKeyAs(key string, ptrStruct any) bool {
 	v := c.Request.Context().Value(ContextKey(key))
 	if v != nil {
-		rv := reflect.ValueOf(ptrStruct)
-		if err := kstrct.SetReflectFieldValue(rv, v); err != nil {
+		if err := kstrct.TrySet(ptrStruct, v); err != nil {
 			return false
 		}
 		return true
@@ -498,7 +496,7 @@ func (c *Context) BodyStruct(dest any) error {
 	} else if err != nil {
 		return err
 	} else {
-		return kstrct.FillFromMap(dest, d)
+		return kstrct.FillM(dest, d)
 	}
 }
 

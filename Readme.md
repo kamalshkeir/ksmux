@@ -23,7 +23,7 @@ KSMUX is a fast and lightweight HTTP router and web framework for Go, featuring 
 To install KSMUX, use the following command:
 
 ```bash
-go get github.com/kamalshkeir/ksmux
+go get github.com/kamalshkeir/ksmux@v0.3.6
 ```
 
 ## Basic Usage
