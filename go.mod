@@ -12,7 +12,7 @@ require (
 
 require (
 	github.com/kamalshkeir/kasm v0.0.2 // indirect
-	github.com/kamalshkeir/kstrct v1.8.9
+	github.com/kamalshkeir/kstrct v1.9.0
 	golang.org/x/net v0.31.0 // indirect
 	golang.org/x/sys v0.27.0 // indirect
 	golang.org/x/time v0.8.0
