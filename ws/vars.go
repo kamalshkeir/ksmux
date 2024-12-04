@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-var FuncBeforeUpgradeWS = func(r *http.Request) bool {
-	return true
-}
-
 var FuncBeforeUpgradeWSHandler = func(w http.ResponseWriter, r *http.Request) {
 }
 
@@ -21,7 +17,6 @@ var DefaultUpgraderKSMUX = Upgrader{
 	ReadBufferSize:    1024,
 	WriteBufferSize:   1024,
 	HandshakeTimeout:  10 * time.Second,
-	CheckOrigin:       FuncBeforeUpgradeWS,
 }
 
 func UpgradeConnection(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*Conn, error) {
