@@ -9,17 +9,17 @@ import (
 )
 
 var (
-	MEDIA_DIR                = "media"
-	HOST                     = ""
-	PORT                     = ""
-	ADDRESS                  = ""
-	DOMAIN                   = ""
-	IsTLS                    = false
-	SUBDOMAINS               = []string{}
-	ReadTimeout              = 5 * time.Second
-	WriteTimeout             = 20 * time.Second
-	IdleTimeout              = 20 * time.Second
-	FuncBeforeServerShutdown = func(srv *http.Server) error {
+	MEDIA_DIR    = "media"
+	HOST         = ""
+	PORT         = ""
+	ADDRESS      = ""
+	DOMAIN       = ""
+	IsTLS        = false
+	SUBDOMAINS   = []string{}
+	ReadTimeout  = 5 * time.Second
+	WriteTimeout = 20 * time.Second
+	IdleTimeout  = 20 * time.Second
+	OnShutdown   = func(srv *http.Server) error {
 		return nil
 	}
 	// context

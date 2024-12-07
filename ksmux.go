@@ -3,6 +3,7 @@ package ksmux
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/kamalshkeir/ksmux/ws"
 	"github.com/kamalshkeir/lg"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 func UpgradeConnection(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*ws.Conn, error) {
@@ -57,13 +59,13 @@ func (router *Router) Use(midws ...func(http.Handler) http.Handler) {
 // Router is a http.Handler which can be used to dispatch requests to different
 // handler functions via configurable routes
 type Router struct {
-	Server *http.Server
-	trees  map[string]*node
-
-	paramsPool  sync.Pool
-	maxParams   uint16
-	middlewares []func(http.Handler) http.Handler
-	secure      bool
+	Server          *http.Server
+	AutoCertManager *autocert.Manager
+	trees           map[string]*node
+	paramsPool      sync.Pool
+	maxParams       uint16
+	middlewares     []func(http.Handler) http.Handler
+	secure          bool
 	// If enabled, adds the matched route path onto the http.Request context
 	// before invoking the handler.
 	// The matched route path is only added to handlers of routes that were
@@ -541,6 +543,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			c := contextPool.Get().(*Context)
 			c.ResponseWriter = w
 			c.Request = req
+			defer contextPool.Put(c)
 			if ps != nil {
 				c.Params = *ps
 				handler(c)
@@ -550,7 +553,6 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				handler(c)
 				c.reset()
 			}
-			contextPool.Put(c)
 			return
 		} else if req.Method != http.MethodConnect && path != "/" {
 			// Moved Permanently, request with GET method
@@ -774,13 +776,17 @@ func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
 			SUBDOMAINS = append(SUBDOMAINS, d)
 		}
 	}
-	certManager, tlsconf := router.CreateServerCerts(DOMAIN, SUBDOMAINS...)
-	if certManager == nil || tlsconf == nil {
-		lg.Fatal("unable to create tlsconfig")
-		return
+
+	if router.AutoCertManager == nil {
+		certManager, tlsconf := router.CreateServerCerts(DOMAIN, SUBDOMAINS...)
+		if certManager == nil || tlsconf == nil {
+			lg.Fatal("unable to create tlsconfig")
+			return
+		}
+		router.AutoCertManager = certManager
 	}
-	router.initAutoServer(tlsconf)
-	go http.ListenAndServe(":80", certManager.HTTPHandler(nil))
+	router.initAutoServer(router.AutoCertManager.TLSConfig())
+	go http.ListenAndServe(":80", router.AutoCertManager.HTTPHandler(nil))
 
 	go func() {
 		lg.Printfs("mgrunning on https://%s , subdomains: %v\n", domainName, SUBDOMAINS)
@@ -830,4 +836,88 @@ func (router *Router) initAutoServer(tlsconf *tls.Config) {
 		TLSConfig:    tlsconf,
 	}
 	router.Server = &server
+}
+
+func (r *Router) PrintTree() {
+	fmt.Println("Router Tree:")
+	for method, root := range r.trees {
+		fmt.Printf("\n[%s]\n", method)
+		printNode(root, "", true)
+	}
+}
+
+func printNode(n *node, prefix string, isLast bool) {
+	// Choose the symbols for the tree structure
+	nodePrefix := "└── "
+	childPrefix := "    "
+	if !isLast {
+		nodePrefix = "├── "
+		childPrefix = "│   "
+	}
+
+	// Print current node
+	handlerStr := ""
+	if n.handler != nil {
+		handlerStr = " [handler]"
+	}
+	paramStr := ""
+	if n.paramInfo != nil && len(n.paramInfo.names) > 0 {
+		paramStr = " " + fmt.Sprint(n.paramInfo.names)
+	}
+
+	if n.nType == catchAll {
+		// Remove the * from path for catchAll
+		cleanPath := strings.TrimPrefix(n.path, "*")
+		fmt.Printf("%s%s*%s%s%s\n", prefix, nodePrefix, cleanPath, paramStr, handlerStr)
+	} else if n.nType == param {
+		// Remove the : from path for params
+		cleanPath := strings.TrimPrefix(n.path, ":")
+		fmt.Printf("%s%s:%s%s%s\n", prefix, nodePrefix, cleanPath, paramStr, handlerStr)
+	} else {
+		fmt.Printf("%s%s%s%s%s\n", prefix, nodePrefix, n.path, paramStr, handlerStr)
+	}
+
+	// Print children
+	for i, child := range n.children {
+		isLastChild := i == len(n.children)-1
+		printNode(child, prefix+childPrefix, isLastChild)
+	}
+}
+
+// ToMap returns a map of all registered paths and their node
+func (r *Router) ToMap() map[string]*node {
+	routes := make(map[string]*node)
+	for method, root := range r.trees {
+		nodeToMap(root, "", method, routes)
+	}
+	return routes
+}
+
+func nodeToMap(n *node, path string, method string, routes map[string]*node) {
+	currentPath := path
+
+	if n.nType == catchAll {
+		currentPath = path + "/*" + strings.TrimPrefix(n.path, "*")
+	} else if n.nType == param {
+		// Use the first param name if available
+		paramName := n.path
+		if n.paramInfo != nil && len(n.paramInfo.names) > 0 {
+			paramName = n.paramInfo.names[0]
+		}
+		currentPath = path + "/:" + strings.TrimPrefix(paramName, ":")
+	} else if n.path != "" {
+		if currentPath == "" {
+			currentPath = "/" + strings.TrimPrefix(n.path, "/")
+		} else {
+			currentPath = currentPath + "/" + strings.TrimPrefix(n.path, "/")
+		}
+	}
+
+	if n.handler != nil {
+		routes[method+" "+currentPath] = n
+	}
+
+	for _, child := range n.children {
+		nodeToMap(child, currentPath, method, routes)
+	}
 }

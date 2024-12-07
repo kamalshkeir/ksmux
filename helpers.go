@@ -385,7 +385,7 @@ func (router *Router) gracefulShutdown() {
 		// Shutdown server
 		timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		err := FuncBeforeServerShutdown(router.Server)
+		err := OnShutdown(router.Server)
 		if err != nil {
 			return err
 		}
