@@ -171,33 +171,23 @@ func saveCertificateAndKey(cert *tls.Certificate) {
 		prefix = "prod"
 	}
 
-	if !isCertificateValid("certs/"+prefix+"_"+domain, 2) {
-		// Certificate is older than 2 months, delete and return
-		err := CopyFile("certs/"+domain, "certs/"+prefix+"_"+domain, 1024*1024)
-		if lg.CheckError(err) {
-			lg.ErrorC("Failed to copy main certificate", "err", err)
-		}
-	} else {
-		return
-	}
-
-	// Save the certificate with the appropriate prefix and creation date
+	// Save the certificate with the appropriate prefix
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
 	certFile := fmt.Sprintf("certs/%s_%s_cert.pem", prefix, domain)
+
+	// Only save if the certificate doesn't exist or is older than 1 month
 	if !isCertificateValid(certFile, 1) {
-		// Certificate is older than 1 months, delete and return
+		// Remove old certificate if it exists
 		_ = os.Remove(certFile)
-	} else {
-		return
+
+		err := os.WriteFile(certFile, certPEM, 0644)
+		if lg.CheckError(err) {
+			lg.ErrorC("Failed to save certificate", "err", err)
+			return
+		}
 	}
 
-	err := os.WriteFile(certFile, certPEM, 0644)
-	if lg.CheckError(err) {
-		lg.ErrorC("Failed to save certificate", "err", err)
-		return
-	}
-
-	// Save the private key with the same prefix and creation date
+	// Save the private key with the same prefix
 	var keyPEM []byte
 	switch key := cert.PrivateKey.(type) {
 	case *rsa.PrivateKey:
@@ -206,22 +196,28 @@ func saveCertificateAndKey(cert *tls.Certificate) {
 		b, err := x509.MarshalECPrivateKey(key)
 		if lg.CheckError(err) {
 			lg.Printfs("Unable to marshal ECDSA private key: %v\n", err)
+			return
 		}
 		keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: b})
 	default:
 		lg.ErrorC("Unsupported private key type", "type", fmt.Sprintf("%T", key))
+		return
 	}
 
 	keyFile := fmt.Sprintf("certs/%s_%s_key.pem", prefix, domain)
+
+	// Only save if the key doesn't exist or is older than 1 month
 	if !isCertificateValid(keyFile, 1) {
+		// Remove old key if it exists
 		_ = os.Remove(keyFile)
+
+		err := os.WriteFile(keyFile, keyPEM, 0600)
+		if lg.CheckError(err) {
+			lg.Printfs("Failed to save private key: %v\n", err)
+			return
+		}
+		lg.Printfs("Certificate %s and private key %s files for %s saved successfully.\n", certFile, keyFile, domain)
 	}
-	err = os.WriteFile(keyFile, keyPEM, 0600)
-	if lg.CheckError(err) {
-		lg.Printfs("Failed to save private key: %v\n", err)
-		return
-	}
-	lg.Printfs("Certificate %s and private key %s files for %s saved successfully.\n", certFile, keyFile, domain)
 }
 
 func isCertificateValid(certFile string, monthN int) bool {
