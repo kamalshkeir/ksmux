@@ -529,10 +529,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			w.Header().Set("Strict-Transport-Security", "max-age=15768000 ; includeSubDomains")
 		}
 	}
+
 	path := req.URL.Path
+	hasTrailingSlash := len(path) > 1 && path[len(path)-1] == '/'
 
 	if root := r.trees[req.Method]; root != nil {
-		if handler, ps, tsr, origines := root.getHandler(path, r.getParams); handler != nil {
+		if handler, ps, _, origines := root.getHandler(path, r.getParams); handler != nil {
 			if corsEnabled && origines != "" && !strings.Contains(origines, "*") && !strings.Contains(origines, req.Header.Get("Origin")) {
 				http.Error(w,
 					http.StatusText(http.StatusForbidden),
@@ -554,41 +556,23 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				c.reset()
 			}
 			return
-		} else if req.Method != http.MethodConnect && path != "/" {
-			// Moved Permanently, request with GET method
-			code := http.StatusMovedPermanently
-			if req.Method != http.MethodGet {
-				// Permanent Redirect, request with same method
-				code = http.StatusPermanentRedirect
-			}
-
-			if tsr && r.RedirectTrailingSlash {
-				if len(path) > 1 && path[len(path)-1] == '/' {
-					req.URL.Path = path[:len(path)-1]
-				} else {
-					req.URL.Path = path + "/"
+		} else if r.RedirectTrailingSlash && hasTrailingSlash {
+			// Try without trailing slash
+			pathWithoutSlash := path[:len(path)-1]
+			if handler, _, _, _ := root.getHandler(pathWithoutSlash, nil); handler != nil {
+				code := http.StatusMovedPermanently // 301 for GET requests
+				if req.Method != http.MethodGet {
+					code = http.StatusPermanentRedirect // 308 for all other methods
 				}
+				req.URL.Path = pathWithoutSlash
 				http.Redirect(w, req, req.URL.String(), code)
 				return
-			}
-
-			// Try to fix the request path
-			if r.RedirectFixedPath {
-				fixedPath, found := root.getCaseInsensitivePath(
-					cleanPath(path),
-					r.RedirectTrailingSlash,
-				)
-				if found {
-					req.URL.Path = fixedPath
-					http.Redirect(w, req, req.URL.String(), code)
-					return
-				}
 			}
 		}
 	}
 
+	// Handle OPTIONS
 	if req.Method == http.MethodOptions && r.HandleOPTIONS {
-		// Handle OPTIONS requests
 		if allow := r.allowed(path, http.MethodOptions); allow != "" {
 			w.Header().Set("Allow", allow)
 			if r.GlobalOPTIONS != nil {
@@ -596,7 +580,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 			return
 		}
-	} else if r.HandleMethodNotAllowed { // Handle 405
+	} else if r.HandleMethodNotAllowed {
 		if allow := r.allowed(path, req.Method); allow != "" {
 			w.Header().Set("Allow", allow)
 			if r.MethodNotAllowed != nil {
