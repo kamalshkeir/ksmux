@@ -215,6 +215,14 @@ func (s *Span) SetStatusCode(code int) {
 	s.statusCode = code
 }
 
+// SetStatusCode sets the HTTP status code
+func (s *Span) SetDuration(d time.Duration) {
+	if s == nil {
+		return
+	}
+	s.duration = d
+}
+
 // GenerateID generates a unique ID for traces and spans
 func GenerateID() string {
 	uuid, _ := GenerateUUID()
