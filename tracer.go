@@ -33,6 +33,9 @@ const (
 	DefaultHoneycombEndpoint = "https://api.honeycomb.io/1/traces"
 	DefaultOTLPEndpoint      = "http://localhost:4318/v1/traces"
 	DefaultSignozEndpoint    = "http://localhost:4318/v1/traces"
+
+	// DefaultMaxTraces is the default maximum number of traces to keep in memory
+	DefaultMaxTraces = 500
 )
 
 // Span represents a single operation within a trace
@@ -69,6 +72,7 @@ type Tracer struct {
 	handler        TraceHandler
 	exportEndpoint string
 	exportType     ExportType
+	maxTraces      int
 }
 
 // TraceHandler is an interface for custom trace handling
@@ -78,7 +82,8 @@ type TraceHandler interface {
 
 var (
 	globalTracer = &Tracer{
-		spans: make(map[string][]*Span),
+		spans:     make(map[string][]*Span),
+		maxTraces: DefaultMaxTraces,
 	}
 )
 
@@ -149,6 +154,29 @@ func (s *Span) End() {
 	s.duration = s.endTime.Sub(s.startTime)
 
 	globalTracer.mu.Lock()
+	// Check if we need to remove old traces
+	if len(globalTracer.spans) >= globalTracer.maxTraces {
+		// Remove oldest trace
+		var oldestTime time.Time
+		var oldestTraceID string
+		first := true
+
+		for traceID, spans := range globalTracer.spans {
+			if len(spans) > 0 {
+				spanStartTime := spans[0].startTime
+				if first || spanStartTime.Before(oldestTime) {
+					oldestTime = spanStartTime
+					oldestTraceID = traceID
+					first = false
+				}
+			}
+		}
+
+		if oldestTraceID != "" {
+			delete(globalTracer.spans, oldestTraceID)
+		}
+	}
+
 	if globalTracer.spans[s.traceID] == nil {
 		globalTracer.spans[s.traceID] = make([]*Span, 0)
 	}
@@ -483,4 +511,11 @@ func convertTagsToOTLP(s *Span) []map[string]interface{} {
 	// ... similar for other tags
 
 	return attrs
+}
+
+// SetMaxTraces sets the maximum number of traces to keep in memory
+func SetMaxTraces(max int) {
+	globalTracer.mu.Lock()
+	defer globalTracer.mu.Unlock()
+	globalTracer.maxTraces = max
 }

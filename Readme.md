@@ -24,7 +24,7 @@ KSMUX is a fast and lightweight HTTP router and web framework for Go, featuring 
 To install KSMUX, use the following command:
 
 ```bash
-go get github.com/kamalshkeir/ksmux@v0.4.3
+go get github.com/kamalshkeir/ksmux@v0.4.4
 ```
 
 ## Tracing
@@ -93,6 +93,17 @@ Default endpoints:
 // Add paths to ignore in tracing
 ksmux.IgnoreTracingEndpoints("/health", "/metrics")
 ```
+
+### Memory Management
+
+By default, the tracer keeps the last 1000 traces in memory. You can adjust this limit:
+
+```go
+// Set maximum number of traces to keep in memory
+ksmux.SetMaxTraces(500) // Keep only the last 500 traces
+```
+
+When the limit is reached, the oldest trace will be removed when a new one is added.
 
 ## Basic Usage
 
