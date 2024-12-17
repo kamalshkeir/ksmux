@@ -161,3 +161,102 @@ func (r *StatusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	}
 	return nil, nil, fmt.Errorf("LOGS MIDDLEWARE: http.Hijacker interface is not supported")
 }
+
+// Add this variable near the top with other vars
+var tracingIgnored = []string{"/metrics", "sw.js", "favicon", "/static/", "/sse/", "/ws/", "/wss/"}
+
+// IgnoreTracingEndpoints allows adding paths to ignore in tracing
+func IgnoreTracingEndpoints(pathContain ...string) {
+	if len(pathContain) > 0 {
+		for _, p := range pathContain {
+			found := false
+			for _, s := range tracingIgnored {
+				if p == s {
+					found = true
+				}
+			}
+			if !found {
+				tracingIgnored = append(tracingIgnored, p)
+			}
+		}
+	}
+}
+
+// TracingMiddleware adds tracing to all routes
+func TracingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if path should be ignored
+		for _, ig := range tracingIgnored {
+			if strings.Contains(r.URL.Path, ig) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// Check if connection is ws
+		for _, header := range r.Header["Upgrade"] {
+			if header == "websocket" {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		span, ctx := StartSpan(r.Context(), fmt.Sprintf("%s %s", r.Method, r.URL.Path))
+		if span != nil {
+			defer span.End()
+
+			// Add common tags
+			span.SetTag("http.method", r.Method)
+			span.SetTag("http.url", r.URL.String())
+			span.SetTag("http.remote_addr", r.RemoteAddr)
+			span.SetTag("http.user_agent", r.UserAgent())
+
+			// Create new context with span
+			r = r.WithContext(ctx)
+
+			// Wrap ResponseWriter to capture status code
+			wrappedWriter := &responseWriterWithStatus{ResponseWriter: w}
+			w = wrappedWriter
+
+			// Execute handler
+			next.ServeHTTP(w, r)
+
+			// Record status code
+			span.SetStatusCode(wrappedWriter.status)
+		} else {
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+// responseWriterWithStatus wraps http.ResponseWriter to capture status code
+type responseWriterWithStatus struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriterWithStatus) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Add these methods to properly implement http.ResponseWriter interfaces
+func (rw *responseWriterWithStatus) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, fmt.Errorf("hijacking not supported")
+}
+
+func (rw *responseWriterWithStatus) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rw *responseWriterWithStatus) Push(target string, opts *http.PushOptions) error {
+	if p, ok := rw.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}

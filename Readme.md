@@ -17,13 +17,81 @@ KSMUX is a fast and lightweight HTTP router and web framework for Go, featuring 
 - **Proxy Support**: Reverse proxy capabilities.
 - **Early Hints**: Send early hints to improve performance.
 - **Server-Sent Events (SSE)**: Support for server-sent events.
+- **Built-in Tracing**: Distributed tracing with OpenTelemetry-compatible backends.
 
 ## Installation
 
 To install KSMUX, use the following command:
 
 ```bash
-go get github.com/kamalshkeir/ksmux@v0.4.2
+go get github.com/kamalshkeir/ksmux@v0.4.3
+```
+
+## Tracing
+
+KSMUX includes built-in distributed tracing capabilities that can export to OpenTelemetry-compatible backends:
+
+```go
+// Enable tracing with default Jaeger endpoint
+ksmux.ConfigureExport("", ksmux.ExportTypeJaeger)
+
+// Or use Tempo
+ksmux.ConfigureExport(ksmux.DefaultTempoEndpoint, ksmux.ExportTypeTempo)
+
+// Enable tracing with optional custom handler
+ksmux.EnableTracing(&CustomTraceHandler{})
+
+// Add tracing middleware to capture all requests
+app.Use(ksmux.TracingMiddleware)
+
+// Manual span creation
+app.Get("/api", func(c *ksmux.Context) {
+    // Create a span
+    span, ctx := ksmux.StartSpan(c.Request.Context(), "operation-name")
+    defer span.End()
+
+    // Add tags
+    span.SetTag("key", "value")
+    
+    // Set error if needed
+    span.SetError(err)
+    
+    // Set status code
+    span.SetStatusCode(200)
+
+    // Use context for propagation
+    doWork(ctx)
+})
+```
+
+### Custom Trace Handler
+
+```go
+type CustomTraceHandler struct{}
+
+func (h *CustomTraceHandler) HandleTrace(span *ksmux.Span) {
+    // Access span information
+    fmt.Printf("Trace: %s, Span: %s, Operation: %s\n",
+        span.TraceID(), span.SpanID(), span.Name())
+}
+```
+
+### Supported Backends
+
+The tracer can export to any OpenTelemetry-compatible backend. Pre-configured support for:
+
+- Jaeger (default)
+- Grafana Tempo
+
+Default endpoints:
+- Jaeger: http://localhost:14268/api/traces
+- Tempo: http://localhost:9411/api/v2/spans
+
+### Ignore Paths
+
+```go
+// Add paths to ignore in tracing
+ksmux.IgnoreTracingEndpoints("/health", "/metrics")
 ```
 
 ## Basic Usage
