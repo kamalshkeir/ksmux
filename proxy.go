@@ -11,11 +11,55 @@ import (
 )
 
 func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.ReverseProxy, url *url.URL) {
-	req.Host = url.Host
-	req.URL.Host = url.Host
-	req.URL.Scheme = url.Scheme
-	//path := req.URL.Path
-	//req.URL.Path = strings.TrimLeft(path, reverseProxyRoutePrefix)
+	// Store original host
+	originalHost := req.Host
+	originalScheme := "http"
+	if req.TLS != nil {
+		originalScheme = "https"
+	}
+
+	// Create director function to modify request
+	proxy.Director = func(r *http.Request) {
+		r.URL.Host = url.Host
+		r.URL.Scheme = url.Scheme
+
+		// Preserve original host
+		r.Header.Set("X-Forwarded-Host", originalHost)
+
+		// Preserve client IP
+		if clientIP := req.Header.Get("X-Forwarded-For"); clientIP != "" {
+			r.Header.Set("X-Forwarded-For", clientIP)
+		} else if clientIP := req.Header.Get("X-Real-IP"); clientIP != "" {
+			r.Header.Set("X-Forwarded-For", clientIP)
+		} else {
+			ip, _, err := net.SplitHostPort(req.RemoteAddr)
+			if err == nil {
+				r.Header.Set("X-Forwarded-For", ip)
+			}
+		}
+
+		// Preserve original scheme
+		r.Header.Set("X-Forwarded-Proto", originalScheme)
+
+		// Pass through all original headers including auth
+		for key, values := range req.Header {
+			r.Header[key] = values
+		}
+	}
+
+	// Add error handling
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		lg.Error("proxy error", "err", err, "url", url.String())
+		http.Error(w, "Proxy Error", http.StatusBadGateway)
+	}
+
+	// Modify response headers
+	proxy.ModifyResponse = func(r *http.Response) error {
+		// Add proxy identifier
+		r.Header.Set("X-Proxied-By", "KSMUX")
+		return nil
+	}
+
 	proxy.ServeHTTP(resp, req)
 }
 

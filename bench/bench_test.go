@@ -14,12 +14,6 @@ import (
 // BenchmarkKsmuxParallel-4                   51164             24343 ns/op           51242 B/op         90 allocs/op
 // BenchmarkKsmuxParallel-4                   54880             21746 ns/op           51243 B/op         90 allocs/op
 // BenchmarkKsmuxParallel-4                   54429             21866 ns/op           51242 B/op         90 allocs/op
-// BenchmarkGin-4                             39356             27099 ns/op           51232 B/op         90 allocs/op
-// BenchmarkGin-4                             47739             26824 ns/op           51232 B/op         90 allocs/op
-// BenchmarkGin-4                             48643             26622 ns/op           51233 B/op         90 allocs/op
-// BenchmarkGinParallel-4                     51730             21755 ns/op           51235 B/op         90 allocs/op
-// BenchmarkGinParallel-4                     52563             21442 ns/op           51237 B/op         90 allocs/op
-// BenchmarkGinParallel-4                     54391             21821 ns/op           51236 B/op         90 allocs/op
 // BenchmarkStdRouter-4                       38364             30295 ns/op           51513 B/op        107 allocs/op
 // BenchmarkStdRouter-4                       40028             29439 ns/op           51513 B/op        107 allocs/op
 // BenchmarkStdRouter-4                       42261             28101 ns/op           51513 B/op        107 allocs/op
@@ -74,48 +68,6 @@ var stdRoutes = []route{
 	{"POST", "/users"},
 	{"GET", "/files/{filepath...}"}, // Using ... for catch-all wildcard
 }
-
-// func BenchmarkGin(b *testing.B) {
-// 	gin.SetMode(gin.ReleaseMode)
-// 	router := gin.New()
-// 	handle := func(c *gin.Context) {}
-
-// 	for _, r := range routes {
-// 		router.Handle(r.method, r.path, handle)
-// 	}
-
-// 	w := httptest.NewRecorder()
-// 	b.ResetTimer()
-
-// 	for i := 0; i < b.N; i++ {
-// 		for _, r := range requests {
-// 			req := httptest.NewRequest(r.method, r.path, nil)
-// 			router.ServeHTTP(w, req)
-// 		}
-// 	}
-// }
-
-// func BenchmarkGinParallel(b *testing.B) {
-// 	gin.SetMode(gin.ReleaseMode)
-// 	router := gin.New()
-// 	handle := func(c *gin.Context) {}
-
-// 	for _, r := range routes {
-// 		router.Handle(r.method, r.path, handle)
-// 	}
-
-// 	b.ResetTimer()
-
-// 	b.RunParallel(func(pb *testing.PB) {
-// 		w := httptest.NewRecorder()
-// 		for pb.Next() {
-// 			for _, r := range requests {
-// 				req := httptest.NewRequest(r.method, r.path, nil)
-// 				router.ServeHTTP(w, req)
-// 			}
-// 		}
-// 	})
-// }
 
 func BenchmarkStdRouter(b *testing.B) {
 	router := http.NewServeMux()

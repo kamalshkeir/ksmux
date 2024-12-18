@@ -221,7 +221,8 @@ func (c *Context) Json(data any) {
 		c.status = 200
 	}
 	c.SetStatus(c.status)
-	by, err := json.Marshal(data)
+
+	by, err := defaultMarshal(data)
 	if !lg.CheckError(err) {
 		_, err = c.ResponseWriter.Write(by)
 		lg.CheckError(err)
@@ -235,6 +236,7 @@ func (c *Context) JsonIndent(data any) {
 		c.status = 200
 	}
 	c.SetStatus(c.status)
+
 	by, err := json.MarshalIndent(data, "", " \t")
 	if !lg.CheckError(err) {
 		_, err = c.ResponseWriter.Write(by)
@@ -466,51 +468,44 @@ func (c *Context) Flush() bool {
 }
 
 // BodyJson get json body from request and return map
-// USAGE : data := c.BodyJson(r)
 func (c *Context) BodyJson() map[string]any {
 	defer c.Request.Body.Close()
-	d := map[string]any{}
-	dec := json.NewDecoder(c.Request.Body)
-	if err := dec.Decode(&d); err == io.EOF {
-		//empty body
-		lg.Error("empty body EOF")
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		lg.Error("error reading body", "err", err)
 		return nil
-	} else if err != nil {
-		lg.Error("error BodyJson", "err", err)
-		return nil
-	} else {
-		return d
 	}
+
+	d := map[string]any{}
+	if err := defaultUnmarshal(body, &d); err != nil {
+		lg.Error("error unmarshaling body", "err", err)
+		return nil
+	}
+	return d
 }
 
+// BodyStruct decodes request body into struct
 func (c *Context) BodyStruct(dest any) error {
 	defer c.Request.Body.Close()
-	d := map[string]any{}
-	dec := json.NewDecoder(c.Request.Body)
-	if err := dec.Decode(&d); err == io.EOF {
-		return fmt.Errorf("empty body EOF")
-	} else if err != nil {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
 		return err
-	} else {
-		return kstrct.FillM(dest, d)
 	}
+	return defaultUnmarshal(body, dest)
 }
 
-// scan body to struct, default json
+// BindBody scans body to struct, default json
 func (c *Context) BindBody(strctPointer any, isXML ...bool) error {
 	defer c.Request.Body.Close()
-	if len(isXML) > 0 && isXML[0] {
-		dec := xml.NewDecoder(c.Request.Body)
-		if err := dec.Decode(strctPointer); lg.CheckError(err) {
-			return err
-		}
-	} else {
-		dec := json.NewDecoder(c.Request.Body)
-		if err := dec.Decode(strctPointer); lg.CheckError(err) {
-			return err
-		}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return err
 	}
-	return nil
+
+	if len(isXML) > 0 && isXML[0] {
+		return xml.Unmarshal(body, strctPointer)
+	}
+	return defaultUnmarshal(body, strctPointer)
 }
 
 func (c *Context) BodyText() string {
