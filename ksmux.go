@@ -768,10 +768,7 @@ func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
 		}
 	}
 	// add pIP
-	pIP := GetPrivateIp()
-	if !SliceContains(subdomains, pIP) {
-		SUBDOMAINS = append(SUBDOMAINS, pIP)
-	}
+	// pIP := GetPrivateIp()
 	for _, d := range subdomains {
 		if !SliceContains(SUBDOMAINS, d) {
 			SUBDOMAINS = append(SUBDOMAINS, d)
