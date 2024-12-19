@@ -30,12 +30,21 @@ func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.R
 		r.Header.Set("X-Forwarded-Host", originalHost)
 		r.Header.Set("X-Forwarded-Proto", originalScheme)
 
+		r.Header.Set("Accept-Encoding", "gzip, deflate, br")
+		r.Header.Set("Accept", "*/*")
+
 		for k, v := range req.Header {
 			r.Header[k] = v
 		}
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		w.Header().Set("Access-Control-Expose-Headers", "*")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+
 		lg.Error("proxy error occurred",
 			"err", err,
 			"url", url.String(),
@@ -46,6 +55,13 @@ func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.R
 
 	proxy.ModifyResponse = func(r *http.Response) error {
 		r.Header.Set("X-Proxied-By", "KSMUX")
+		r.Header.Set("Access-Control-Allow-Origin", "*")
+		r.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD")
+		r.Header.Set("Access-Control-Allow-Headers", "*")
+		r.Header.Set("Access-Control-Expose-Headers", "*")
+		r.Header.Set("Access-Control-Allow-Credentials", "true")
+		r.Header.Set("Cache-Control", "public, max-age=31536000")
+		r.Header.Set("Vary", "Accept-Encoding")
 		return nil
 	}
 
