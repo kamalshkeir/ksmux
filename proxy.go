@@ -6,6 +6,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/kamalshkeir/lg"
 )
@@ -16,6 +17,21 @@ func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.R
 	if req.TLS != nil {
 		originalScheme = "https"
 	}
+
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+	}
+
+	proxy.Transport = transport
 
 	proxy.Director = func(r *http.Request) {
 		r.URL.Host = url.Host
@@ -29,9 +45,8 @@ func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.R
 		r.Host = url.Host
 		r.Header.Set("X-Forwarded-Host", originalHost)
 		r.Header.Set("X-Forwarded-Proto", originalScheme)
-
-		r.Header.Set("Accept-Encoding", "gzip, deflate, br")
-		r.Header.Set("Accept", "*/*")
+		r.Header.Set("X-Real-IP", req.RemoteAddr)
+		r.Header.Set("X-Forwarded-For", req.RemoteAddr)
 
 		for k, v := range req.Header {
 			r.Header[k] = v
@@ -39,29 +54,35 @@ func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.R
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
 		w.Header().Set("Access-Control-Expose-Headers", "*")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-		lg.Error("proxy error occurred",
-			"err", err,
-			"url", url.String(),
-			"path", r.URL.Path,
-			"method", r.Method)
 		http.Error(w, "Proxy Error", http.StatusBadGateway)
 	}
 
 	proxy.ModifyResponse = func(r *http.Response) error {
+		r.Header.Set("X-Content-Type-Options", "nosniff")
+		r.Header.Set("X-Frame-Options", "DENY")
+		r.Header.Set("X-XSS-Protection", "1; mode=block")
+
 		r.Header.Set("X-Proxied-By", "KSMUX")
+
 		r.Header.Set("Access-Control-Allow-Origin", "*")
 		r.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD")
 		r.Header.Set("Access-Control-Allow-Headers", "*")
 		r.Header.Set("Access-Control-Expose-Headers", "*")
 		r.Header.Set("Access-Control-Allow-Credentials", "true")
+
 		r.Header.Set("Cache-Control", "public, max-age=31536000")
 		r.Header.Set("Vary", "Accept-Encoding")
+
 		return nil
 	}
 
