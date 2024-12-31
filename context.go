@@ -486,12 +486,8 @@ func (c *Context) BodyJson() map[string]any {
 
 // BodyStruct decodes request body into struct
 func (c *Context) BodyStruct(dest any) error {
-	defer c.Request.Body.Close()
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		return err
-	}
-	return defaultUnmarshal(body, dest)
+	bodyM := c.BodyJson()
+	return kstrct.FillM(dest, bodyM)
 }
 
 // BindBody scans body to struct, default json
@@ -501,11 +497,18 @@ func (c *Context) BindBody(strctPointer any, isXML ...bool) error {
 	if err != nil {
 		return err
 	}
-
+	d := map[string]any{}
 	if len(isXML) > 0 && isXML[0] {
-		return xml.Unmarshal(body, strctPointer)
+		if err := xml.Unmarshal(body, &d); err != nil {
+			return err
+		}
+	} else {
+		if err := defaultUnmarshal(body, &d); err != nil {
+			return err
+		}
 	}
-	return defaultUnmarshal(body, strctPointer)
+
+	return kstrct.FillM(strctPointer, d)
 }
 
 func (c *Context) BodyText() string {

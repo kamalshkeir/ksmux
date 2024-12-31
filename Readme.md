@@ -24,7 +24,7 @@ KSMUX is a fast and lightweight HTTP router and web framework for Go, featuring 
 To install KSMUX, use the following command:
 
 ```bash
-go get github.com/kamalshkeir/ksmux@v0.4.9
+go get github.com/kamalshkeir/ksmux@latest
 ```
 
 ## Tracing
@@ -52,10 +52,10 @@ app.Get("/api", func(c *ksmux.Context) {
 
     // Add tags
     span.SetTag("key", "value")
-    
+
     // Set error if needed
     span.SetError(err)
-    
+
     // Set status code
     span.SetStatusCode(200)
 
@@ -117,12 +117,12 @@ import "github.com/kamalshkeir/ksmux"
 func main() {
     // Create a new router
     router := ksmux.New()
-    
+
     // Define a route
     router.Get("/", func(c *ksmux.Context) {
         c.Text("Hello World!")
     })
-    
+
     // Start the server
     router.Run(":8080")
 }
@@ -216,14 +216,14 @@ router.Get("/ws", func(c *ksmux.Context) {
     if err != nil {
         return
     }
-    
+
     // Handle WebSocket messages
     for {
         messageType, p, err := conn.ReadMessage()
         if err != nil {
             return
         }
-        
+
         // Echo the message back
         err = conn.WriteMessage(messageType, p)
         if err != nil {
