@@ -3,11 +3,12 @@ package ksmux
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/kamalshkeir/ksmux/jsonencdec"
 )
 
 // ExportType defines the type of trace exporter
@@ -316,7 +317,7 @@ func (s *Span) export() error {
 		return nil
 	}
 
-	jsonData, err := json.Marshal(payload)
+	jsonData, err := jsonencdec.DefaultMarshal(payload)
 	if err != nil {
 		return err
 	}

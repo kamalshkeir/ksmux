@@ -1,12 +1,13 @@
 package ksmux
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/kamalshkeir/ksmux/jsonencdec"
 )
 
 func TestKsmux(t *testing.T) {
@@ -155,7 +156,7 @@ func TestKsmux(t *testing.T) {
 
 			if tt.wantIsJSON {
 				var got map[string]string
-				if err := json.Unmarshal(body, &got); err != nil {
+				if err := jsonencdec.DefaultUnmarshal(body, &got); err != nil {
 					t.Fatalf("Failed to parse JSON response: %v", err)
 				}
 				if !maps.Equal(got, tt.wantJSON) {

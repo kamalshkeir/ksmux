@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kamalshkeir/kencoding/json"
-
 	"github.com/kamalshkeir/ksmux/ws"
 	"github.com/kamalshkeir/lg"
 	"golang.org/x/crypto/acme/autocert"
@@ -141,21 +139,6 @@ func New() *Router {
 		HandleMethodNotAllowed: true,
 		HandleOPTIONS:          true,
 	}
-}
-
-// Define function types for JSON handling
-type JsonMarshal func(v interface{}) ([]byte, error)
-type JsonUnmarshal func(data []byte, v interface{}) error
-
-var (
-	defaultMarshal   JsonMarshal   = json.Marshal
-	defaultUnmarshal JsonUnmarshal = json.Unmarshal
-)
-
-// SetDefaultMarshalers sets the default JSON marshal/unmarshal functions
-func SetDefaultMarshalers(marshal JsonMarshal, unmarshal JsonUnmarshal) {
-	defaultMarshal = marshal
-	defaultUnmarshal = unmarshal
 }
 
 // Get is a shortcut for router.Handle(http.MethodGet, path, handler)

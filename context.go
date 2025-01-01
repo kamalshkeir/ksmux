@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kamalshkeir/kencoding/json"
+	"github.com/kamalshkeir/ksmux/jsonencdec"
 	"github.com/kamalshkeir/ksmux/ws"
 	"github.com/kamalshkeir/kstrct"
 	"github.com/kamalshkeir/lg"
@@ -222,7 +222,7 @@ func (c *Context) Json(data any) {
 	}
 	c.SetStatus(c.status)
 
-	by, err := defaultMarshal(data)
+	by, err := jsonencdec.DefaultMarshal(data)
 	if !lg.CheckError(err) {
 		_, err = c.ResponseWriter.Write(by)
 		lg.CheckError(err)
@@ -237,7 +237,7 @@ func (c *Context) JsonIndent(data any) {
 	}
 	c.SetStatus(c.status)
 
-	by, err := json.MarshalIndent(data, "", " \t")
+	by, err := jsonencdec.DefaultMarshalIndent(data, "", " \t")
 	if !lg.CheckError(err) {
 		_, err = c.ResponseWriter.Write(by)
 		lg.CheckError(err)
@@ -477,7 +477,7 @@ func (c *Context) BodyJson() map[string]any {
 	}
 
 	d := map[string]any{}
-	if err := defaultUnmarshal(body, &d); err != nil {
+	if err := jsonencdec.DefaultUnmarshal(body, &d); err != nil {
 		lg.Error("error unmarshaling body", "err", err)
 		return nil
 	}
@@ -503,7 +503,7 @@ func (c *Context) BindBody(strctPointer any, isXML ...bool) error {
 			return err
 		}
 	} else {
-		if err := defaultUnmarshal(body, &d); err != nil {
+		if err := jsonencdec.DefaultUnmarshal(body, &d); err != nil {
 			return err
 		}
 	}

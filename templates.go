@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/kamalshkeir/kencoding/json"
+	"github.com/kamalshkeir/ksmux/jsonencdec"
 	"github.com/kamalshkeir/lg"
 	"golang.org/x/text/runes"
 	"golang.org/x/text/transform"
@@ -302,7 +302,7 @@ var functions = template.FuncMap{
 		return false
 	},
 	"json": func(data any) string {
-		d, err := json.MarshalIndent(data, "", "\t")
+		d, err := jsonencdec.DefaultMarshalIndent(data, "", "\t")
 		if err != nil {
 			d = []byte("cannot marshal data")
 		}
