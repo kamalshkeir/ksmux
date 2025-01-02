@@ -19,9 +19,7 @@ var (
 	ReadTimeout  = 5 * time.Second
 	WriteTimeout = 20 * time.Second
 	IdleTimeout  = 20 * time.Second
-	OnShutdown   = func(srv *http.Server) error {
-		return nil
-	}
+	onShutdown   = []func(srv *http.Server) error{}
 	// context
 	MultipartSize          = 10 << 20
 	beforeRenderHtml       = kmap.New[string, func(c *Context, data *map[string]any)]()

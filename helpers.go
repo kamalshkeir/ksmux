@@ -381,20 +381,12 @@ func (router *Router) gracefulShutdown() {
 		// Shutdown server
 		timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		err := OnShutdown(router.Server)
-		if err != nil {
-			return err
+		for _, sh := range onShutdown {
+			lg.CheckError(sh(router.Server))
 		}
 		if router.Server != nil {
-			if err := router.Server.Shutdown(timeout); err != nil {
-				return err
-			}
+			lg.CheckError(router.Server.Shutdown(timeout))
 		}
-		// else if certmagic.UsedHTTPServer != nil {
-		// 	if err := certmagic.UsedHTTPServer.Shutdown(timeout); err != nil {
-		// 		return err
-		// 	}
-		// }
 		if limiterUsed {
 			close(limiterQuit)
 		}
@@ -403,6 +395,10 @@ func (router *Router) gracefulShutdown() {
 	if err != nil {
 		os.Exit(1)
 	}
+}
+
+func OnShutdown(fn func(srv *http.Server) error) {
+	onShutdown = append(onShutdown, fn)
 }
 
 func Graceful(f func() error) error {
