@@ -1,10 +1,10 @@
 module github.com/kamalshkeir/ksmux
 
-go 1.23.0
+go 1.23.4
 
 require (
-	github.com/kamalshkeir/kmap v1.1.4
-	github.com/kamalshkeir/kstrct v1.9.16
+	github.com/kamalshkeir/kmap v1.1.6
+	github.com/kamalshkeir/kstrct v1.9.17
 	github.com/kamalshkeir/lg v0.1.3
 	golang.org/x/crypto v0.31.0
 	golang.org/x/text v0.21.0

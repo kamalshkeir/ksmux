@@ -1,7 +1,6 @@
 package ksmux
 
 import (
-	"fmt"
 	"io"
 	"maps"
 	"net/http/httptest"
@@ -50,10 +49,6 @@ func TestKsmux(t *testing.T) {
 			"teamId":  c.Param("teamId"),
 		})
 	})
-	router.PrintTree()
-	for k, v := range router.ToMap() {
-		fmt.Printf("%s %s\n", k, v.path)
-	}
 
 	tests := []struct {
 		name       string

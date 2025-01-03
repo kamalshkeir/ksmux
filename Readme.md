@@ -15,7 +15,7 @@ KSMUX is a fast and lightweight HTTP router and web framework for Go, featuring 
 - **Request Logging**: Log incoming requests with customizable logging.
 - **Rate Limiting**: Limit the rate of incoming requests.
 - **Proxy Support**: Reverse proxy capabilities.
-- **Early Hints**: Send early hints to improve performance.
+- **Load Balancer**: powerful load balancer that support middlewares as code for each backend
 - **Server-Sent Events (SSE)**: Support for server-sent events.
 - **Built-in Tracing**: Distributed tracing with OpenTelemetry-compatible backends.
 
@@ -265,6 +265,38 @@ router.LocalStatics("static/", "/static")
 
 // Serve embedded files
 router.EmbededStatics(embededFS, "static/", "/static")
+```
+
+## Load Balancer
+
+
+```go
+func main() {
+	app := ksmux.New()
+
+	err := app.LocalStatics("assets", "/static")
+	lg.CheckError(err)
+	err = app.LocalTemplates("temps")
+	lg.CheckError(err)
+
+	// Setup load balancer for /api path, distributing requests between two backend servers
+	err = app.LoadBalancer("/",
+		ksmux.BackendOpt{
+			Url: "localhost:8081",
+			Middlewares: []ksmux.Handler{
+				func(c *ksmux.Context) {
+					fmt.Println("from middleware 8081")
+				},
+			},
+		},
+		ksmux.BackendOpt{
+			Url: "localhost:8082",
+		},
+	)
+	lg.CheckError(err)
+
+	app.Run(":9313")
+}
 ```
 
 ## Configuration
