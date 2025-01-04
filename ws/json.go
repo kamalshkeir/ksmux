@@ -27,7 +27,7 @@ func (c *Conn) WriteJSON(v interface{}) error {
 }
 
 func (c *Conn) writeJSON(v interface{}) error {
-	w, err := c.NextWriter(BinaryMessage)
+	w, err := c.NextWriter(TextMessage)
 	if err != nil {
 		return err
 	}
