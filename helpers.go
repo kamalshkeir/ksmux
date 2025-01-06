@@ -298,7 +298,7 @@ func (r *Router) saveMatchedRoutePath(path string, handler Handler) Handler {
 
 func (r *Router) recv(w http.ResponseWriter, req *http.Request) {
 	if rcv := recover(); rcv != nil {
-		r.PanicHandler(w, req, rcv)
+		r.RouterConfig.PanicHandler(w, req, rcv)
 	}
 }
 
@@ -336,7 +336,7 @@ func (r *Router) allowed(path, reqMethod string) (allow string) {
 				allowed = append(allowed, method)
 			}
 		} else {
-			return r.globalAllowed
+			return r.RouterConfig.globalAllowed
 		}
 	} else { // specific path
 		for method := range r.trees {
@@ -355,7 +355,7 @@ func (r *Router) allowed(path, reqMethod string) (allow string) {
 
 	if len(allowed) > 0 {
 		// Add request method to list of allowed methods
-		if r.HandleOPTIONS {
+		if r.RouterConfig.HandleOPTIONS {
 			allowed = append(allowed, http.MethodOptions)
 		}
 
@@ -378,27 +378,39 @@ func (r *Router) allowed(path, reqMethod string) (allow string) {
 // Graceful Shutdown
 func (router *Router) gracefulShutdown() {
 	err := Graceful(func() error {
-		// Shutdown server
-		timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		for _, sh := range onShutdown {
-			lg.CheckError(sh(router.Server))
-		}
 		if router.Server != nil {
-			lg.CheckError(router.Server.Shutdown(timeout))
+			// Run any registered shutdown handlers first
+			for _, sh := range router.Config.onShutdown {
+				if err := sh(); err != nil {
+					lg.Error("on shutdown handler error:", "err", err)
+				}
+			}
+
+			// Create a deadline for shutdown
+			timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			// Attempt graceful shutdown
+			if err := router.Server.Shutdown(timeout); err != nil {
+				// Log but don't treat as fatal error
+				lg.Error("shutdown error:", "err", err)
+			}
 		}
+
 		if limiterUsed {
 			close(limiterQuit)
 		}
 		return nil
 	})
-	if err != nil {
+
+	// Only exit with error if it's not a shutdown error
+	if err != nil && err != http.ErrServerClosed {
 		os.Exit(1)
 	}
 }
 
-func OnShutdown(fn func(srv *http.Server) error) {
-	onShutdown = append(onShutdown, fn)
+func (router *Router) OnShutdown(fn func() error) {
+	router.Config.onShutdown = append(router.Config.onShutdown, fn)
 }
 
 func Graceful(f func() error) error {

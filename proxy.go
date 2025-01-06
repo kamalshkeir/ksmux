@@ -98,7 +98,7 @@ func proxyMid() func(http.Handler) http.Handler {
 			}
 			host = strings.TrimSuffix(host, ":")
 
-			if v, ok := proxies.Get(host); ok {
+			if v, ok := GetFirstRouter().proxies.Get(host); ok {
 				v.ServeHTTP(w, r)
 				return
 			}
@@ -126,16 +126,13 @@ func (router *Router) ReverseProxy(host, toURL string) (newRouter *Router) {
 		lg.WarnC("Port is ignored in host")
 	}
 	proxy := httputil.NewSingleHostReverseProxy(urll)
-	if !proxyUsed {
-		proxyUsed = true
-		if len(router.middlewares) > 0 {
-			router.middlewares = append([]func(http.Handler) http.Handler{proxyMid()}, router.middlewares...)
-		} else {
-			router.middlewares = append(router.middlewares, proxyMid())
-		}
+	if len(router.middlewares) > 0 {
+		router.middlewares = append([]func(http.Handler) http.Handler{proxyMid()}, router.middlewares...)
+	} else {
+		router.middlewares = append(router.middlewares, proxyMid())
 	}
 	newRouter = New()
-	_ = proxies.Set(host, newRouter)
+	_ = router.proxies.Set(host, newRouter)
 
 	handler := func(c *Context) {
 		proxyHandler(c.Request, c.ResponseWriter, proxy, urll)

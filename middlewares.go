@@ -105,7 +105,7 @@ func Logs(callback ...func(method, path, remote string, status int, took time.Du
 }
 
 var Cors = func(allowed ...string) func(http.Handler) http.Handler {
-	corsEnabled = true
+	firstRouter.state.corsEnabled = true
 	if len(allowed) == 0 {
 		allowed = append(allowed, "*")
 	}

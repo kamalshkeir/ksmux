@@ -119,6 +119,16 @@ func (router *Router) LoadBalancer(pattern string, backends ...BackendOpt) error
 	return nil
 }
 
+func (lb *LoadBalancer) RemoveDeadBackends() {
+	lb.mux.Lock()
+	defer lb.mux.Unlock()
+	for i := len(lb.backends) - 1; i >= 0; i-- {
+		if !lb.backends[i].Alive {
+			lb.backends = append(lb.backends[:i], lb.backends[i+1:]...)
+		}
+	}
+}
+
 func newLoadBalancer(healthCheck bool) *LoadBalancer {
 	return &LoadBalancer{
 		backends:    make([]*Backend, 0),
@@ -239,8 +249,14 @@ func (lb *LoadBalancer) healthCheckBackend(backend *Backend) {
 	lb.checkBackendHealth(backend)
 
 	ticker := time.NewTicker(5 * time.Second)
-	for range ticker.C {
-		lb.checkBackendHealth(backend)
+	cleanupTicker := time.NewTicker(30 * time.Second) // Cleanup every 30 seconds
+	for {
+		select {
+		case <-ticker.C:
+			lb.checkBackendHealth(backend)
+		case <-cleanupTicker.C:
+			backend.circuitBreaker.cleanup() // Clean up old failure data
+		}
 	}
 }
 
@@ -317,5 +333,13 @@ func (cb *CircuitBreaker) RecordFailure() {
 	if cb.failureCount >= cb.failureThreshold {
 		cb.state = StateOpen
 		cb.lastFailure = time.Now()
+	}
+}
+
+func (cb *CircuitBreaker) cleanup() {
+	cb.mutex.Lock()
+	defer cb.mutex.Unlock()
+	if time.Since(cb.lastFailure) > cb.resetTimeout*2 {
+		cb.failureCount = 0
 	}
 }

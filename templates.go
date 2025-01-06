@@ -29,7 +29,6 @@ var tempFunc func() error
 // BeforeRenderHtml executed before every html render, you can use reqCtx.Value(key).(type.User) for example and add data to templates globaly
 func BeforeRenderHtml(uniqueName string, fn func(c *Context, data *map[string]any)) {
 	beforeRenderHtml.Set(uniqueName, fn)
-	beforeRenderHtmlSetted = true
 }
 
 func (router *Router) LocalStatics(dirPath, webPath string, handlerMiddlewares ...func(handler Handler) Handler) error {

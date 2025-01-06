@@ -4,16 +4,23 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/kamalshkeir/kmap"
 	"github.com/kamalshkeir/ksmux/ws"
 	"github.com/kamalshkeir/lg"
 	"golang.org/x/crypto/acme/autocert"
 )
+
+var allrouters = kmap.New[string, *Router]()
 
 func UpgradeConnection(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*ws.Conn, error) {
 	return ws.DefaultUpgraderKSMUX.Upgrade(w, r, responseHeader)
@@ -56,89 +63,398 @@ func (router *Router) Use(midws ...func(http.Handler) http.Handler) {
 	}
 }
 
+type RouterConfig struct {
+	ReadTimeout            time.Duration
+	WriteTimeout           time.Duration
+	IdleTimeout            time.Duration
+	GlobalOPTIONS          http.Handler
+	NotFound               http.Handler
+	MethodNotAllowed       http.Handler
+	PanicHandler           func(http.ResponseWriter, *http.Request, interface{})
+	globalAllowed          string
+	SaveMatchedPath        bool
+	RedirectTrailingSlash  bool
+	RedirectFixedPath      bool
+	HandleMethodNotAllowed bool
+	HandleOPTIONS          bool
+}
+
+type state struct {
+	withDocs            bool
+	corsEnabled         bool
+	swagFound           bool
+	generateSwaggerJson bool
+	generateGoComments  bool
+	docsPatterns        []*Route
+}
+
 // Router is a http.Handler which can be used to dispatch requests to different
 // handler functions via configurable routes
 type Router struct {
 	Server          *http.Server
 	AutoCertManager *autocert.Manager
+	Config          *Config
+	RouterConfig    *RouterConfig
+	state           *state
 	trees           map[string]*node
-	paramsPool      sync.Pool
-	maxParams       uint16
 	middlewares     []func(http.Handler) http.Handler
+	proxies         *kmap.SafeMap[string, http.Handler]
+	paramsPool      sync.Pool
 	secure          bool
-	// If enabled, adds the matched route path onto the http.Request context
-	// before invoking the handler.
-	// The matched route path is only added to handlers of routes that were
-	// registered when this option was enabled.
-	SaveMatchedPath bool
+	maxParams       uint16
+}
 
-	// Enables automatic redirection if the current route can't be matched but a
-	// handler for the path with (without) the trailing slash exists.
-	// For example if /foo/ is requested but a route only exists for /foo, the
-	// client is redirected to /foo with http status code 301 for GET requests
-	// and 308 for all other request methods.
-	RedirectTrailingSlash bool
-
-	// If enabled, the router tries to fix the current request path, if no
-	// handlre is registered for it.
-	// First superfluous path elements like ../ or // are removed.
-	// Afterwards the router does a case-insensitive lookup of the cleaned path.
-	// If a handler can be found for this route, the router makes a redirection
-	// to the corrected path with status code 301 for GET requests and 308 for
-	// all other request methods.
-	// For example /FOO and /..//Foo could be redirected to /foo.
-	// RedirectTrailingSlash is independent of this option.
-	RedirectFixedPath bool
-
-	// If enabled, the router checks if another method is allowed for the
-	// current route, if the current request can not be routed.
-	// If this is the case, the request is answered with 'Method Not Allowed'
-	// and HTTP status code 405.
-	// If no other Method is allowed, the request is delegated to the NotFound
-	// handler.
-	HandleMethodNotAllowed bool
-
-	// If enabled, the router automatically replies to OPTIONS requests.
-	// Custom OPTIONS handlers take priority over automatic replies.
-	HandleOPTIONS bool
-
-	// An optional http.Handler that is called on automatic OPTIONS requests.
-	// The handler is only called if HandleOPTIONS is true and no OPTIONS
-	// handler for the specific path was set.
-	// The "Allowed" header is set before calling the handler.
-	GlobalOPTIONS http.Handler
-
-	// Cached value of global (*) allowed methods
-	globalAllowed string
-
-	// Configurable http.Handler which is called when no matching route is
-	// found. If it is not set, http.NotFound is used.
-	NotFound http.Handler
-
-	// Configurable http.Handler which is called when a request
-	// cannot be routed and HandleMethodNotAllowed is true.
-	// If it is not set, http.Error with http.StatusMethodNotAllowed is used.
-	// The "Allow" header with allowed request methods is set before the handler
-	// is called.
-	MethodNotAllowed http.Handler
-
-	// Function to handle panics recovered from http handlers.
-	// It should be used to generate a error page and return the http error code
-	// 500 (Internal Server Error).
-	// The handler can be used to keep your server from crashing because of
-	// unrecovered panics.
-	PanicHandler func(http.ResponseWriter, *http.Request, interface{})
+type Config struct {
+	Address     string
+	Domain      string
+	SubDomains  []string
+	CertPath    string
+	CertKeyPath string
+	MediaDir    string
+	isTls       bool
+	host        string
+	port        string
+	onShutdown  []func() error
 }
 
 // New returns a new initialized Router.
 // Path auto-correction, including trailing slashes, is enabled by default.
-func New() *Router {
-	return &Router{
-		RedirectTrailingSlash:  true,
-		RedirectFixedPath:      true,
-		HandleMethodNotAllowed: true,
-		HandleOPTIONS:          true,
+func New(config ...Config) *Router {
+	router := &Router{
+		RouterConfig: &RouterConfig{
+			ReadTimeout:            5 * time.Second,
+			WriteTimeout:           20 * time.Second,
+			IdleTimeout:            20 * time.Second,
+			RedirectTrailingSlash:  true,
+			RedirectFixedPath:      true,
+			HandleMethodNotAllowed: true,
+			HandleOPTIONS:          true,
+		},
+		Config: &Config{
+			Address:  "localhost:9313",
+			MediaDir: "media",
+			host:     "localhost",
+			port:     "9313",
+		},
+		state: &state{
+			generateGoComments: true,
+			docsPatterns:       []*Route{},
+		},
 	}
+	if len(config) > 0 {
+		router.Config = &config[0]
+		if router.Config.Address != "" {
+			host, port, err := net.SplitHostPort(router.Config.Address)
+			if err == nil {
+				if host != "" {
+					router.Config.host = host
+				} else {
+					router.Config.host = "localhost"
+				}
+				if port != "" {
+					if port == "443" {
+						router.secure = true
+					}
+					router.Config.port = port
+				}
+				router.Config.Address = router.Config.host + ":" + router.Config.port
+			} else {
+				lg.ErrorC("Address not valid")
+				return router
+			}
+		}
+
+		if router.Config.CertPath != "" {
+			router.Config.isTls = true
+			if router.Config.Domain != "" {
+				router.Config.Address = router.Config.Domain
+				router.Config.Domain = ""
+			}
+			host, port, err := net.SplitHostPort(router.Config.Address)
+			if err == nil {
+				if host != "" {
+					router.Config.host = host
+				}
+				if port != "" {
+					if port == "443" {
+						router.secure = true
+					}
+					router.Config.port = port
+				}
+				if host == "" && port == "" {
+					router.Config.port = "443"
+					router.secure = true
+				}
+			} else {
+				lg.ErrorC("Address not valid")
+				return router
+			}
+		}
+
+		if router.Config.Domain != "" {
+			router.Config.isTls = true
+			router.secure = true
+			host, port, _ := net.SplitHostPort(router.Config.Address)
+			if host == "" && port == "" {
+				router.Config.port = "443"
+			}
+			if port != "" {
+				router.Config.port = port
+			} else {
+				port = "443"
+				err := checkDomain(router.Config.Domain)
+				if err == nil {
+					router.Config.Address = router.Config.Domain
+				}
+			}
+		}
+
+	}
+	if router.Config.Address != "" {
+		allrouters.Set(router.Config.Address, router)
+	} else if router.Config.Domain != "" {
+		allrouters.Set(router.Config.Domain, router)
+	}
+	return router
+}
+
+func GetRouters() *kmap.SafeMap[string, *Router] {
+	return allrouters
+}
+
+func GetRouter(addrOrDomain string) (*Router, bool) {
+	return allrouters.Get(addrOrDomain)
+}
+
+func GetFirstRouter() *Router {
+	if firstRouter != nil {
+		return firstRouter
+	}
+	allrouters.Range(func(_ string, value *Router) bool {
+		firstRouter = value
+		return false
+	})
+	return firstRouter
+}
+
+func (router *Router) IsTls() bool {
+	return router.Config.isTls
+}
+func (router *Router) Address() string {
+	return router.Config.Address
+}
+func (router *Router) Host() string {
+	return router.Config.host
+}
+func (router *Router) Port() string {
+	return router.Config.port
+}
+
+// Run HTTP server on address
+func (router *Router) Run() {
+	router.initServer(router.Config.Address)
+
+	// Create a done channel to handle shutdown
+	serverDone := make(chan struct{})
+
+	// Listen and serve
+	go func() {
+		if err := router.Server.ListenAndServe(); err != http.ErrServerClosed {
+			lg.Error("Unable to shutdown the server", "err", err)
+			os.Exit(1)
+		} else {
+			lg.Info("Server Off")
+		}
+		close(serverDone)
+	}()
+
+	if router.state.generateSwaggerJson {
+		DocsGeneralDefaults.Host = router.Config.Address
+		for i := len(router.state.docsPatterns) - 1; i >= 0; i-- {
+			route := router.state.docsPatterns[i]
+			if route.Docs == nil || !route.Docs.Triggered {
+				router.state.docsPatterns = append(router.state.docsPatterns[:i], router.state.docsPatterns[i+1:]...)
+			}
+		}
+		if router.state.generateGoComments {
+			GenerateGoDocsComments()
+		}
+		GenerateJsonDocs()
+		OnDocsGenerationReady()
+	}
+
+	lg.Printfs("mgrunning on http://%s\n", router.Config.Address)
+
+	// Wait for interrupt signal
+	s := make(chan os.Signal, 1)
+	signal.Notify(s, os.Interrupt)
+	<-s
+
+	// Create a deadline for shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Run any registered shutdown handlers
+	for _, sh := range router.Config.onShutdown {
+		if err := sh(); err != nil {
+			lg.Error("shutdown handler error:", "err", err)
+		}
+	}
+
+	// Attempt graceful shutdown
+	if err := router.Server.Shutdown(ctx); err != nil {
+		lg.Error("shutdown error:", "err", err)
+	}
+
+	// Wait for server to finish
+	<-serverDone
+}
+
+// RunTLS HTTPS server using certificates
+func (router *Router) RunTLS() {
+	router.initServer(router.Config.Address)
+	router.Server.TLSConfig.MinVersion = tls.VersionTLS12
+	router.Server.TLSConfig.NextProtos = append([]string{"h2", "http/1.1"}, router.Server.TLSConfig.NextProtos...)
+
+	// Create a done channel to handle shutdown
+	serverDone := make(chan struct{})
+
+	go func() {
+		lg.Printfs("mgrunning on https://%s\n", router.Config.Address)
+		if err := router.Server.ListenAndServeTLS(router.Config.CertPath, router.Config.CertKeyPath); err != http.ErrServerClosed {
+			lg.Error("Unable to shutdown the server", "err", err)
+			os.Exit(1)
+		} else {
+			lg.Info("Server Off")
+		}
+		close(serverDone)
+	}()
+
+	if router.state.generateSwaggerJson {
+		DocsGeneralDefaults.Host = router.Config.Address
+		for i := len(router.state.docsPatterns) - 1; i >= 0; i-- {
+			route := router.state.docsPatterns[i]
+			if route.Docs == nil || !route.Docs.Triggered {
+				router.state.docsPatterns = append(router.state.docsPatterns[:i], router.state.docsPatterns[i+1:]...)
+			}
+		}
+		if router.state.generateGoComments {
+			GenerateGoDocsComments()
+		}
+		GenerateJsonDocs()
+		OnDocsGenerationReady()
+	}
+
+	// Wait for interrupt signal
+	s := make(chan os.Signal, 1)
+	signal.Notify(s, os.Interrupt)
+	<-s
+
+	// Create a deadline for shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Run any registered shutdown handlers
+	for _, sh := range router.Config.onShutdown {
+		if err := sh(); err != nil {
+			lg.Error("shutdown handler error:", "err", err)
+		}
+	}
+
+	// Attempt graceful shutdown
+	if err := router.Server.Shutdown(ctx); err != nil {
+		lg.Error("shutdown error:", "err", err)
+	}
+
+	// Wait for server to finish
+	<-serverDone
+}
+
+// RunAutoTLS HTTPS server generate certificates and handle renew
+func (router *Router) RunAutoTLS() {
+	if router.proxies.Len() > 0 {
+		if len(router.Config.SubDomains) != router.proxies.Len() {
+			prs := router.proxies.Keys()
+			for _, pr := range prs {
+				found := false
+				for _, d := range router.Config.SubDomains {
+					if d == pr {
+						found = true
+						break
+					}
+				}
+				if !found {
+					router.Config.SubDomains = append(router.Config.SubDomains, pr)
+				}
+			}
+		}
+	}
+
+	if router.AutoCertManager == nil {
+		certManager, tlsconf := router.CreateServerCerts(router.Config.Domain, router.Config.SubDomains...)
+		if certManager == nil || tlsconf == nil {
+			lg.Fatal("unable to create tlsconfig")
+			return
+		}
+		router.AutoCertManager = certManager
+	}
+	router.initAutoServer(router.AutoCertManager.TLSConfig())
+
+	// Create a done channel to handle shutdown
+	serverDone := make(chan struct{})
+
+	// Start HTTP challenge server
+	go http.ListenAndServe(":80", router.AutoCertManager.HTTPHandler(nil))
+
+	go func() {
+		lg.Printfs("mgrunning on https://%s , subdomains: %v\n", router.Config.Domain, router.Config.SubDomains)
+		if err := router.Server.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
+			lg.Error("Unable to run the server", "err", err)
+			os.Exit(1)
+		} else {
+			lg.Printfs("grServer Off !\n")
+		}
+		close(serverDone)
+	}()
+
+	if router.state.generateSwaggerJson {
+		DocsGeneralDefaults.Host = router.Config.Domain
+		for i := len(router.state.docsPatterns) - 1; i >= 0; i-- {
+			route := router.state.docsPatterns[i]
+			if route.Docs == nil || !route.Docs.Triggered {
+				router.state.docsPatterns = append(router.state.docsPatterns[:i], router.state.docsPatterns[i+1:]...)
+			}
+		}
+		if router.state.generateGoComments {
+			GenerateGoDocsComments()
+		}
+		GenerateJsonDocs()
+		OnDocsGenerationReady()
+	}
+
+	// Wait for interrupt signal
+	s := make(chan os.Signal, 1)
+	signal.Notify(s, os.Interrupt)
+	<-s
+
+	// Create a deadline for shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Run any registered shutdown handlers
+	for _, sh := range router.Config.onShutdown {
+		if err := sh(); err != nil {
+			lg.Error("shutdown handler error:", "err", err)
+		}
+	}
+
+	// Attempt graceful shutdown
+	if err := router.Server.Shutdown(ctx); err != nil {
+		lg.Error("shutdown error:", "err", err)
+	}
+
+	// Wait for server to finish
+	<-serverDone
 }
 
 // Get is a shortcut for router.Handle(http.MethodGet, path, handler)
@@ -350,7 +666,7 @@ func (r *Router) Handle(method, path string, handler Handler, origines ...string
 		return nil
 	}
 
-	if r.SaveMatchedPath {
+	if r.RouterConfig.SaveMatchedPath {
 		varsCount++
 		handler = r.saveMatchedRoutePath(path, handler)
 	}
@@ -358,10 +674,10 @@ func (r *Router) Handle(method, path string, handler Handler, origines ...string
 	route.Method = method
 	route.Pattern = path
 	route.Handler = handler
-	if corsEnabled && len(origines) > 0 {
+	if r.state.corsEnabled && len(origines) > 0 {
 		route.Origines = strings.Join(origines, ",")
 	}
-	if withDocs && !strings.Contains(path, "*") && method != "WS" && method != "SSE" {
+	if r.state.withDocs && !strings.Contains(path, "*") && method != "WS" && method != "SSE" {
 		d := &DocsRoute{
 			Pattern:     path,
 			Summary:     "A " + method + " request on " + path,
@@ -372,7 +688,7 @@ func (r *Router) Handle(method, path string, handler Handler, origines ...string
 			Params:      []string{},
 		}
 		route.Docs = d
-		docsPatterns = append(docsPatterns, &route)
+		r.state.docsPatterns = append(r.state.docsPatterns, &route)
 	}
 
 	if r.trees == nil {
@@ -384,7 +700,7 @@ func (r *Router) Handle(method, path string, handler Handler, origines ...string
 		root = new(node)
 		r.trees[method] = root
 
-		r.globalAllowed = r.allowed("*", "")
+		r.RouterConfig.globalAllowed = r.allowed("*", "")
 	}
 
 	root.addPath(path, handler, origines...)
@@ -495,12 +811,12 @@ func (router *Router) WithMetrics(httpHandler http.Handler, path ...string) {
 // WithDocs check and install swagger, and generate json and go docs at the end , after the server run, you can use ksmux.OnDocsGenerationReady()
 // genGoDocs default to true if genJsonDocs
 func (router *Router) WithDocs(genJsonDocs bool, genGoDocs ...bool) *Router {
-	withDocs = true
-	generateSwaggerJson = genJsonDocs
+	router.state.withDocs = true
+	router.state.generateSwaggerJson = genJsonDocs
 	if len(genGoDocs) > 0 && !genGoDocs[0] {
-		generateGoComments = false
+		router.state.generateGoComments = false
 	}
-	if !swagFound && genJsonDocs {
+	if !router.state.swagFound && genJsonDocs {
 		err := CheckAndInstallSwagger()
 		if lg.CheckError(err) {
 			return router
@@ -511,14 +827,14 @@ func (router *Router) WithDocs(genJsonDocs bool, genGoDocs ...bool) *Router {
 
 // EnableDomainCheck enable only the domain check from ksmux methods Get,Post,... (does not add cors middleware)
 func (router *Router) EnableDomainCheck() {
-	if !corsEnabled {
-		corsEnabled = true
+	if !router.state.corsEnabled {
+		router.state.corsEnabled = true
 	}
 }
 
 // ServeHTTP makes the router implement the http.Handler interface.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if r.PanicHandler != nil {
+	if r.RouterConfig.PanicHandler != nil {
 		defer r.recv(w, req)
 	}
 
@@ -535,7 +851,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if root := r.trees[req.Method]; root != nil {
 		if handler, ps, _, origines := root.getHandler(path, r.getParams); handler != nil {
-			if corsEnabled && origines != "" && !strings.Contains(origines, "*") && !strings.Contains(origines, req.Header.Get("Origin")) {
+			if r.state.corsEnabled && origines != "" && !strings.Contains(origines, "*") && !strings.Contains(origines, req.Header.Get("Origin")) {
 				http.Error(w,
 					http.StatusText(http.StatusForbidden),
 					http.StatusForbidden,
@@ -556,7 +872,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				c.reset()
 			}
 			return
-		} else if r.RedirectTrailingSlash && hasTrailingSlash {
+		} else if r.RouterConfig.RedirectTrailingSlash && hasTrailingSlash {
 			// Try without trailing slash
 			pathWithoutSlash := path[:len(path)-1]
 			if handler, _, _, _ := root.getHandler(pathWithoutSlash, nil); handler != nil {
@@ -572,19 +888,19 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Handle OPTIONS
-	if req.Method == http.MethodOptions && r.HandleOPTIONS {
+	if req.Method == http.MethodOptions && r.RouterConfig.HandleOPTIONS {
 		if allow := r.allowed(path, http.MethodOptions); allow != "" {
 			w.Header().Set("Allow", allow)
-			if r.GlobalOPTIONS != nil {
-				r.GlobalOPTIONS.ServeHTTP(w, req)
+			if r.RouterConfig.GlobalOPTIONS != nil {
+				r.RouterConfig.GlobalOPTIONS.ServeHTTP(w, req)
 			}
 			return
 		}
-	} else if r.HandleMethodNotAllowed {
+	} else if r.RouterConfig.HandleMethodNotAllowed {
 		if allow := r.allowed(path, req.Method); allow != "" {
 			w.Header().Set("Allow", allow)
-			if r.MethodNotAllowed != nil {
-				r.MethodNotAllowed.ServeHTTP(w, req)
+			if r.RouterConfig.MethodNotAllowed != nil {
+				r.RouterConfig.MethodNotAllowed.ServeHTTP(w, req)
 			} else {
 				http.Error(w,
 					http.StatusText(http.StatusMethodNotAllowed),
@@ -596,17 +912,14 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Handle 404
-	if r.NotFound != nil {
-		r.NotFound.ServeHTTP(w, req)
+	if r.RouterConfig.NotFound != nil {
+		r.RouterConfig.NotFound.ServeHTTP(w, req)
 	} else {
 		http.NotFound(w, req)
 	}
 }
 
 func (router *Router) initServer(addr string) {
-	if addr != ADDRESS {
-		ADDRESS = addr
-	}
 	var h http.Handler
 	if len(router.middlewares) > 0 {
 		for i := range router.middlewares {
@@ -623,175 +936,11 @@ func (router *Router) initServer(addr string) {
 	server := http.Server{
 		Addr:         addr,
 		Handler:      h,
-		ReadTimeout:  ReadTimeout,
-		WriteTimeout: WriteTimeout,
-		IdleTimeout:  IdleTimeout,
+		ReadTimeout:  router.RouterConfig.ReadTimeout,
+		WriteTimeout: router.RouterConfig.WriteTimeout,
+		IdleTimeout:  router.RouterConfig.IdleTimeout,
 	}
 	router.Server = &server
-}
-
-// Run HTTP server on address
-func (router *Router) Run(addr string) {
-	if ADDRESS != addr {
-		sp := strings.Split(addr, ":")
-		if len(sp) > 0 {
-			if sp[0] != "" && sp[1] != "" {
-				ADDRESS = addr
-			} else {
-				HOST = "localhost"
-				PORT = sp[1]
-				ADDRESS = HOST + addr
-			}
-		} else {
-			lg.Error("server addr not valid")
-			return
-		}
-	}
-
-	router.initServer(ADDRESS)
-
-	// Listen and serve
-	go func() {
-		if err := router.Server.ListenAndServe(); err != http.ErrServerClosed {
-			lg.Error("Unable to shutdown the server", "err", err)
-			os.Exit(1)
-		} else {
-			lg.Info("Server Off")
-		}
-	}()
-
-	if generateSwaggerJson {
-		DocsGeneralDefaults.Host = ADDRESS
-		for i := len(docsPatterns) - 1; i >= 0; i-- {
-			route := docsPatterns[i]
-			if route.Docs == nil || !route.Docs.Triggered {
-				docsPatterns = append(docsPatterns[:i], docsPatterns[i+1:]...)
-			}
-		}
-		if generateGoComments {
-			GenerateGoDocsComments()
-		}
-		GenerateJsonDocs()
-		OnDocsGenerationReady()
-	}
-	lg.Printfs("mgrunning on http://%s\n", ADDRESS)
-	// graceful Shutdown server
-	router.gracefulShutdown()
-}
-
-// RunTLS HTTPS server using certificates
-func (router *Router) RunTLS(addr, cert, certKey string) {
-	router.secure = strings.Contains(addr, "443") || !strings.Contains(addr, ":")
-	if ADDRESS != addr {
-		sp := strings.Split(addr, ":")
-		if len(sp) > 0 {
-			if sp[0] != "" && sp[1] != "" {
-				ADDRESS = addr
-			} else {
-				HOST = "localhost"
-				PORT = sp[1]
-				ADDRESS = HOST + addr
-			}
-		} else {
-			lg.Error("server add not valid")
-			return
-		}
-	}
-	IsTLS = true
-	// graceful Shutdown server
-	router.initServer(ADDRESS)
-	router.Server.TLSConfig.MinVersion = tls.VersionTLS12
-	router.Server.TLSConfig.NextProtos = append([]string{"h2", "http/1.1"}, router.Server.TLSConfig.NextProtos...)
-	go func() {
-		lg.Printfs("mgrunning on https://%s\n", ADDRESS)
-		if err := router.Server.ListenAndServeTLS(cert, certKey); err != http.ErrServerClosed {
-			lg.Error("Unable to shutdown the server", "err", err)
-		} else {
-			lg.Info("Server Off")
-		}
-	}()
-	if generateSwaggerJson {
-		DocsGeneralDefaults.Host = ADDRESS
-		for i := len(docsPatterns) - 1; i >= 0; i-- {
-			route := docsPatterns[i]
-			if route.Docs == nil || !route.Docs.Triggered {
-				docsPatterns = append(docsPatterns[:i], docsPatterns[i+1:]...)
-			}
-		}
-		if generateGoComments {
-			GenerateGoDocsComments()
-		}
-		GenerateJsonDocs()
-		OnDocsGenerationReady()
-	}
-	router.gracefulShutdown()
-}
-
-// RunAutoTLS HTTPS server generate certificates and handle renew
-func (router *Router) RunAutoTLS(domainName string, subdomains ...string) {
-	router.secure = strings.Contains(domainName, "443") || !strings.Contains(domainName, ":")
-	if !strings.Contains(domainName, ":") {
-		err := checkDomain(domainName)
-		if err == nil {
-			DOMAIN = domainName
-			ADDRESS = domainName
-			PORT = "443"
-		}
-	} else {
-		sp := strings.Split(domainName, ":")
-		if sp[0] != "" {
-			DOMAIN = sp[0]
-			PORT = sp[1]
-		}
-	}
-	IsTLS = true
-	if proxyUsed {
-		if len(SUBDOMAINS) != proxies.Len() {
-			SUBDOMAINS = proxies.Keys()
-		}
-	}
-	// add pIP
-	// pIP := GetPrivateIp()
-	for _, d := range subdomains {
-		if !SliceContains(SUBDOMAINS, d) {
-			SUBDOMAINS = append(SUBDOMAINS, d)
-		}
-	}
-
-	if router.AutoCertManager == nil {
-		certManager, tlsconf := router.CreateServerCerts(DOMAIN, SUBDOMAINS...)
-		if certManager == nil || tlsconf == nil {
-			lg.Fatal("unable to create tlsconfig")
-			return
-		}
-		router.AutoCertManager = certManager
-	}
-	router.initAutoServer(router.AutoCertManager.TLSConfig())
-	go http.ListenAndServe(":80", router.AutoCertManager.HTTPHandler(nil))
-
-	go func() {
-		lg.Printfs("mgrunning on https://%s , subdomains: %v\n", domainName, SUBDOMAINS)
-		if err := router.Server.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
-			lg.Error("Unable to run the server", "err", err)
-		} else {
-			lg.Printfs("grServer Off !\n")
-		}
-	}()
-	if generateSwaggerJson {
-		DocsGeneralDefaults.Host = ADDRESS
-		for i := len(docsPatterns) - 1; i >= 0; i-- {
-			route := docsPatterns[i]
-			if route.Docs == nil || !route.Docs.Triggered {
-				docsPatterns = append(docsPatterns[:i], docsPatterns[i+1:]...)
-			}
-		}
-		if generateGoComments {
-			GenerateGoDocsComments()
-		}
-		GenerateJsonDocs()
-		OnDocsGenerationReady()
-	}
-	router.gracefulShutdown()
 }
 
 func (router *Router) initAutoServer(tlsconf *tls.Config) {
@@ -809,11 +958,11 @@ func (router *Router) initAutoServer(tlsconf *tls.Config) {
 	}
 	// Setup Server
 	server := http.Server{
-		Addr:         ":" + PORT,
+		Addr:         ":" + router.Config.port,
 		Handler:      h,
-		ReadTimeout:  ReadTimeout,
-		WriteTimeout: WriteTimeout,
-		IdleTimeout:  IdleTimeout,
+		ReadTimeout:  router.RouterConfig.ReadTimeout,
+		WriteTimeout: router.RouterConfig.WriteTimeout,
+		IdleTimeout:  router.RouterConfig.IdleTimeout,
 		TLSConfig:    tlsconf,
 	}
 	router.Server = &server
@@ -901,4 +1050,54 @@ func nodeToMap(n *node, path string, method string, routes map[string]*node) {
 	for _, child := range n.children {
 		nodeToMap(child, currentPath, method, routes)
 	}
+}
+
+// Restart shuts down the current server, runs cleanup callbacks, and starts a new server instance
+func (router *Router) Restart(cleanupCallbacks ...func() error) error {
+	// Run cleanup callbacks if any
+	for _, cleanup := range cleanupCallbacks {
+		if err := cleanup(); err != nil {
+			return fmt.Errorf("cleanup callback error: %v", err)
+		}
+	}
+
+	// Get current executable path
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get executable path: %v", err)
+	}
+
+	// Shutdown current server first
+	if router.Server != nil {
+		timeout, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := router.Server.Shutdown(timeout); err != nil {
+			lg.Error("shutdown error:", "err", err)
+		}
+	}
+
+	// Wait a bit for the port to be released
+	time.Sleep(100 * time.Millisecond)
+
+	// Start the new process using exec.Command
+	cmd := exec.Command(executable)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start new process: %v", err)
+	}
+
+	// Register a shutdown handler for graceful exit
+	router.OnShutdown(func() error {
+		os.Exit(0)
+		return nil
+	})
+
+	// Wait for interrupt signal
+	s := make(chan os.Signal, 1)
+	signal.Notify(s, os.Interrupt)
+	<-s
+
+	return nil
 }

@@ -164,12 +164,12 @@ func CheckAndInstallSwagger() error {
 			return err
 		}
 	}
-	swagFound = true
+	firstRouter.state.swagFound = true
 	return nil
 }
 
 func GenerateJsonDocs(entryDocsFile ...string) {
-	if !generateGoComments {
+	if !firstRouter.state.generateGoComments {
 		DocsEntryFile = "main.go"
 	}
 	if len(entryDocsFile) > 0 {
@@ -248,7 +248,7 @@ func GenerateGoDocsComments(pkgName ...string) {
 		return
 	}
 
-	for _, route := range docsPatterns {
+	for _, route := range firstRouter.state.docsPatterns {
 		if err := tmpl.Execute(file, route); err != nil {
 			fmt.Println("error generate ksmux docs on execute:", err)
 			return

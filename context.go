@@ -251,12 +251,10 @@ func (c *Context) Html(template_name string, data map[string]any) {
 		data = make(map[string]any)
 	}
 	data["Request"] = c.Request
-	if beforeRenderHtmlSetted {
-		beforeRenderHtml.Range(func(key string, value func(c *Context, data *map[string]any)) bool {
-			value(c, &data)
-			return true
-		})
-	}
+	beforeRenderHtml.Range(func(key string, value func(c *Context, data *map[string]any)) bool {
+		value(c, &data)
+		return true
+	})
 
 	err := allTemplates.ExecuteTemplate(&buff, template_name, data)
 	if lg.CheckError(err) {
@@ -308,12 +306,10 @@ func (c *Context) NamedRawHtml(rawTemplateName string, data map[string]any) erro
 		data = make(map[string]any)
 	}
 	data["Request"] = c.Request
-	if beforeRenderHtmlSetted {
-		beforeRenderHtml.Range(func(key string, value func(c *Context, data *map[string]any)) bool {
-			value(c, &data)
-			return true
-		})
-	}
+	beforeRenderHtml.Range(func(key string, value func(c *Context, data *map[string]any)) bool {
+		value(c, &data)
+		return true
+	})
 	t, ok := rawTemplates.Get(rawTemplateName)
 	if !ok {
 		return fmt.Errorf("template not registered. Use ksmux.SaveRawHtml before using c.RawHtml")
@@ -341,12 +337,10 @@ func (c *Context) RawHtml(rawTemplate string, data map[string]any) error {
 		data = make(map[string]any)
 	}
 	data["Request"] = c.Request
-	if beforeRenderHtmlSetted {
-		beforeRenderHtml.Range(func(key string, value func(c *Context, data *map[string]any)) bool {
-			value(c, &data)
-			return true
-		})
-	}
+	beforeRenderHtml.Range(func(key string, value func(c *Context, data *map[string]any)) bool {
+		value(c, &data)
+		return true
+	})
 	t, err := template.New("rawww").Funcs(functions).Parse(rawTemplate)
 	if err != nil {
 		return err
@@ -642,20 +636,21 @@ func (c *Context) UploadFile(received_filename, folder_out string, acceptedForma
 
 			data_string := buff.String()
 
+			rr := GetFirstRouter()
 			// make DIRS if not exist
-			err = os.MkdirAll(MEDIA_DIR+"/"+folder_out+"/", 0770)
+			err = os.MkdirAll(rr.Config.MediaDir+"/"+folder_out+"/", 0770)
 			if err != nil {
 				return "", nil, err
 			}
 			if len(acceptedFormats) == 0 || StringContains(f.Filename, acceptedFormats...) {
-				dst, err := os.Create(MEDIA_DIR + "/" + folder_out + "/" + f.Filename)
+				dst, err := os.Create(rr.Config.MediaDir + "/" + folder_out + "/" + f.Filename)
 				if err != nil {
 					return "", nil, err
 				}
 				defer dst.Close()
 				dst.Write([]byte(data_string))
 
-				url = MEDIA_DIR + "/" + folder_out + "/" + f.Filename
+				url = rr.Config.MediaDir + "/" + folder_out + "/" + f.Filename
 				data = []byte(data_string)
 			} else {
 				lg.Error("not handled", "fname", f.Filename)
@@ -686,21 +681,21 @@ func (c *Context) UploadFiles(received_filenames []string, folder_out string, ac
 				}
 
 				data_string := buff.String()
-
+				rr := GetFirstRouter()
 				// make DIRS if not exist
-				err = os.MkdirAll(MEDIA_DIR+"/"+folder_out+"/", 0770)
+				err = os.MkdirAll(rr.Config.MediaDir+"/"+folder_out+"/", 0770)
 				if err != nil {
 					return nil, nil, err
 				}
 				if len(acceptedFormats) == 0 || StringContains(f.Filename, acceptedFormats...) {
-					dst, err := os.Create(MEDIA_DIR + "/" + folder_out + "/" + f.Filename)
+					dst, err := os.Create(rr.Config.MediaDir + "/" + folder_out + "/" + f.Filename)
 					if err != nil {
 						return nil, nil, err
 					}
 					defer dst.Close()
 					dst.Write([]byte(data_string))
 
-					url := MEDIA_DIR + "/" + folder_out + "/" + f.Filename
+					url := rr.Config.MediaDir + "/" + folder_out + "/" + f.Filename
 					urls = append(urls, url)
 					datas = append(datas, []byte(data_string))
 				} else {
