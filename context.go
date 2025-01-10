@@ -256,7 +256,17 @@ func (c *Context) Html(template_name string, data map[string]any) {
 		return true
 	})
 
-	err := allTemplates.ExecuteTemplate(&buff, template_name, data)
+	// Get the cached template
+	tmpl, ok := cachedTemplates.Get(template_name)
+	if !ok {
+		c.status = http.StatusInternalServerError
+		lg.Error("template not found in cache", "template", template_name)
+		http.Error(c.ResponseWriter, fmt.Sprintf("template %s not found", template_name), c.status)
+		return
+	}
+
+	// Execute the template directly
+	err := tmpl.Execute(&buff, data)
 	if lg.CheckError(err) {
 		c.status = http.StatusInternalServerError
 		lg.Error("could not render", "err", err, "temp", template_name)
@@ -544,23 +554,35 @@ func (c *Context) ServeEmbededFile(content_type string, embed_file []byte) {
 	lg.CheckError(err)
 }
 
-func (c *Context) ParseMultipartForm(size ...int64) (formData url.Values, formFiles map[string][]*multipart.FileHeader) {
-	s := int64(32 << 20)
-	if len(size) > 0 {
-		s = size[0]
+func (c *Context) ParseMultipartForm(maxSize ...int64) (formData url.Values, formFiles map[string][]*multipart.FileHeader) {
+	// Default max size to 32MB if not specified
+	maxMemory := int64(32 << 20)
+	if len(maxSize) > 0 {
+		maxMemory = maxSize[0]
 	}
-	r := c.Request
-	parseErr := r.ParseMultipartForm(s)
-	if parseErr != nil {
-		lg.Error("ParseMultipartForm error", "err", parseErr)
+
+	// Check Content-Length header first
+	if c.Request.ContentLength > maxMemory {
+		return nil, nil
 	}
-	defer func() {
-		err := r.MultipartForm.RemoveAll()
-		lg.CheckError(err)
-	}()
-	formData = r.Form
-	formFiles = r.MultipartForm.File
-	return formData, formFiles
+
+	// Set the max request size
+	c.Request.Body = http.MaxBytesReader(c.ResponseWriter, c.Request.Body, maxMemory)
+
+	// Parse the multipart form with memory limit
+	if err := c.Request.ParseMultipartForm(maxMemory); err != nil {
+		return nil, nil
+	}
+
+	// Safe cleanup after successful parsing
+	if c.Request.MultipartForm != nil {
+		_ = c.Request.MultipartForm.RemoveAll()
+	}
+	if c.Request.Body != nil {
+		_ = c.Request.Body.Close()
+	}
+
+	return c.Request.Form, c.Request.MultipartForm.File
 }
 
 // SaveFile save file to path

@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kamalshkeir/kmap"
 	"github.com/kamalshkeir/ksmux/jsonencdec"
 	"github.com/kamalshkeir/lg"
 	"golang.org/x/text/runes"
@@ -23,8 +24,10 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-var allTemplates = template.New("all_templates")
-var tempFunc func() error
+var (
+	cachedTemplates = kmap.New[string, *template.Template]()
+	tempFunc        func() error
+)
 
 // BeforeRenderHtml executed before every html render, you can use reqCtx.Value(key).(type.User) for example and add data to templates globaly
 func BeforeRenderHtml(uniqueName string, fn func(c *Context, data *map[string]any)) {
@@ -80,31 +83,64 @@ func (router *Router) LocalTemplates(pathToDir string) error {
 		cleanRoot := filepath.ToSlash(pathToDir)
 		pfx := len(cleanRoot) + 1
 
-		err := filepath.Walk(cleanRoot, func(path string, info os.FileInfo, e1 error) error {
-			if !info.IsDir() && strings.HasSuffix(path, ".html") {
-				if e1 != nil {
-					return e1
-				}
-
-				b, e2 := os.ReadFile(path)
-				if e2 != nil {
-					return e2
-				}
-				name := filepath.ToSlash(path[pfx:])
-				t := allTemplates.New(name).Funcs(functions)
-				_, e2 = t.Parse(string(b))
-				if e2 != nil {
-					return e2
-				}
+		// First collect and parse all layout files together
+		var layoutFiles []string
+		err := filepath.Walk(pathToDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
 			}
-
+			if !info.IsDir() && strings.HasSuffix(path, "layout.html") {
+				layoutFiles = append(layoutFiles, path)
+			}
 			return nil
 		})
+		if err != nil {
+			return err
+		}
 
-		return err
+		// Now parse each non-layout template with all layouts
+		return filepath.Walk(pathToDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() && strings.HasSuffix(path, ".html") && !strings.HasSuffix(path, "layout.html") {
+				name := filepath.ToSlash(path[pfx:])
+
+				// Create a new template set with the page name
+				t := template.New(name).Funcs(functions)
+
+				// Parse all layouts first
+				for _, layoutFile := range layoutFiles {
+					content, err := os.ReadFile(layoutFile)
+					if err != nil {
+						lg.Error("Failed to read layout file", "path", layoutFile, "err", err)
+						return err
+					}
+					_, err = t.Parse(string(content))
+					if err != nil {
+						lg.Error("Failed to parse layout file", "path", layoutFile, "err", err)
+						return err
+					}
+				}
+
+				// Then parse the page template
+				content, err := os.ReadFile(path)
+				if err != nil {
+					lg.Error("Failed to read page template", "path", path, "err", err)
+					return err
+				}
+				_, err = t.Parse(string(content))
+				if err != nil {
+					lg.Error("Failed to parse page template", "path", path, "err", err)
+					return err
+				}
+
+				cachedTemplates.Set(name, t)
+			}
+			return nil
+		})
 	}
-	err := tempFunc()
-	return err
+	return tempFunc()
 }
 
 func (router *Router) EmbededTemplates(template_embed embed.FS, rootDir string) error {
@@ -113,30 +149,64 @@ func (router *Router) EmbededTemplates(template_embed embed.FS, rootDir string) 
 		cleanRoot := filepath.ToSlash(rootDir)
 		pfx := len(cleanRoot) + 1
 
-		err := fs.WalkDir(template_embed, cleanRoot, func(path string, info fs.DirEntry, e1 error) error {
-			if lg.CheckError(e1) {
-				return e1
+		// First collect all layout files
+		var layoutFiles []string
+		err := fs.WalkDir(template_embed, rootDir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
 			}
-			if !info.IsDir() && strings.HasSuffix(path, ".html") {
-				b, e2 := template_embed.ReadFile(path)
-				if lg.CheckError(e2) {
-					return e2
-				}
-
-				name := filepath.ToSlash(path[pfx:])
-				t := allTemplates.New(name).Funcs(functions)
-				_, e3 := t.Parse(string(b))
-				if lg.CheckError(e3) {
-					return e2
-				}
+			if !d.IsDir() && strings.HasSuffix(path, "layout.html") {
+				layoutFiles = append(layoutFiles, path)
 			}
-
 			return nil
 		})
-		return err
+		if err != nil {
+			return err
+		}
+
+		// Now parse each non-layout template with all layouts
+		return fs.WalkDir(template_embed, rootDir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() && strings.HasSuffix(path, ".html") && !strings.HasSuffix(path, "layout.html") {
+				name := filepath.ToSlash(path[pfx:])
+
+				// Create a new template set with the page name
+				t := template.New(name).Funcs(functions)
+
+				// Parse all layouts first
+				for _, layoutFile := range layoutFiles {
+					content, err := template_embed.ReadFile(layoutFile)
+					if err != nil {
+						lg.Error("Failed to read layout file", "path", layoutFile, "err", err)
+						return err
+					}
+					_, err = t.Parse(string(content))
+					if err != nil {
+						lg.Error("Failed to parse layout file", "path", layoutFile, "err", err)
+						return err
+					}
+				}
+
+				// Then parse the page template
+				content, err := template_embed.ReadFile(path)
+				if err != nil {
+					lg.Error("Failed to read page template", "path", path, "err", err)
+					return err
+				}
+				_, err = t.Parse(string(content))
+				if err != nil {
+					lg.Error("Failed to parse page template", "path", path, "err", err)
+					return err
+				}
+
+				cachedTemplates.Set(name, t)
+			}
+			return nil
+		})
 	}
-	err := tempFunc()
-	return err
+	return tempFunc()
 }
 
 func (router *Router) ServeLocalFile(file, endpoint, contentType string) {
@@ -159,7 +229,7 @@ func NewFuncMap(funcMap map[string]any) {
 			functions[k] = v
 		}
 	}
-	if allTemplates != nil {
+	if tempFunc != nil {
 		lg.CheckError(tempFunc())
 	}
 }
@@ -172,7 +242,7 @@ func (router *Router) NewFuncMap(funcMap map[string]any) {
 			functions[k] = v
 		}
 	}
-	if allTemplates != nil {
+	if tempFunc != nil {
 		lg.CheckError(tempFunc())
 	}
 }
@@ -183,7 +253,7 @@ func (router *Router) NewTemplateFunc(funcName string, function any) {
 	} else {
 		functions[funcName] = function
 	}
-	if allTemplates != nil {
+	if tempFunc != nil {
 		lg.CheckError(tempFunc())
 	}
 }

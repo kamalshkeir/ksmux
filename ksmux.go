@@ -102,6 +102,7 @@ type Router struct {
 	paramsPool      sync.Pool
 	secure          bool
 	maxParams       uint16
+	sig             chan os.Signal
 }
 
 type Config struct {
@@ -215,6 +216,7 @@ func New(config ...Config) *Router {
 	} else if router.Config.Domain != "" {
 		allrouters.Set(router.Config.Domain, router)
 	}
+	router.sig = make(chan os.Signal, 1)
 	return router
 }
 
@@ -248,6 +250,58 @@ func (router *Router) Host() string {
 }
 func (router *Router) Port() string {
 	return router.Config.port
+}
+
+// Stop gracefully shuts down the server.
+// It triggers the shutdown process by sending an interrupt signal and waits for completion.
+func (router *Router) Stop() {
+	if router.Server == nil {
+		return
+	}
+	// Send interrupt signal to trigger shutdown
+	router.sig <- os.Interrupt
+}
+
+func (router *Router) Signal() chan os.Signal {
+	if router.Server == nil {
+		return nil
+	}
+	return router.sig
+}
+
+// Restart shuts down the current server, runs cleanup callbacks, and starts a new server instance
+func (router *Router) Restart(cleanupCallbacks ...func() error) error {
+	// Run cleanup callbacks if any
+	for _, cleanup := range cleanupCallbacks {
+		if err := cleanup(); err != nil {
+			return fmt.Errorf("cleanup callback error: %v", err)
+		}
+	}
+
+	// Get current executable path
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get executable path: %v", err)
+	}
+
+	// Shutdown current server first
+	router.Stop()
+
+	// Wait a moment for the server to fully stop
+	time.Sleep(1 * time.Second)
+
+	// Start the new process using exec.Command
+	cmd := exec.Command(executable)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start new process: %v", err)
+	}
+
+	// Exit current process
+	os.Exit(0)
+	return nil
 }
 
 // Run HTTP server on address
@@ -286,9 +340,8 @@ func (router *Router) Run() {
 	lg.Printfs("mgrunning on http://%s\n", router.Config.Address)
 
 	// Wait for interrupt signal
-	s := make(chan os.Signal, 1)
-	signal.Notify(s, os.Interrupt)
-	<-s
+	signal.Notify(router.sig, os.Interrupt)
+	<-router.sig
 
 	// Create a deadline for shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -346,9 +399,8 @@ func (router *Router) RunTLS() {
 	}
 
 	// Wait for interrupt signal
-	s := make(chan os.Signal, 1)
-	signal.Notify(s, os.Interrupt)
-	<-s
+	signal.Notify(router.sig, os.Interrupt)
+	<-router.sig
 
 	// Create a deadline for shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -433,9 +485,8 @@ func (router *Router) RunAutoTLS() {
 	}
 
 	// Wait for interrupt signal
-	s := make(chan os.Signal, 1)
-	signal.Notify(s, os.Interrupt)
-	<-s
+	signal.Notify(router.sig, os.Interrupt)
+	<-router.sig
 
 	// Create a deadline for shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1050,54 +1101,4 @@ func nodeToMap(n *node, path string, method string, routes map[string]*node) {
 	for _, child := range n.children {
 		nodeToMap(child, currentPath, method, routes)
 	}
-}
-
-// Restart shuts down the current server, runs cleanup callbacks, and starts a new server instance
-func (router *Router) Restart(cleanupCallbacks ...func() error) error {
-	// Run cleanup callbacks if any
-	for _, cleanup := range cleanupCallbacks {
-		if err := cleanup(); err != nil {
-			return fmt.Errorf("cleanup callback error: %v", err)
-		}
-	}
-
-	// Get current executable path
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable path: %v", err)
-	}
-
-	// Shutdown current server first
-	if router.Server != nil {
-		timeout, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := router.Server.Shutdown(timeout); err != nil {
-			lg.Error("shutdown error:", "err", err)
-		}
-	}
-
-	// Wait a bit for the port to be released
-	time.Sleep(100 * time.Millisecond)
-
-	// Start the new process using exec.Command
-	cmd := exec.Command(executable)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start new process: %v", err)
-	}
-
-	// Register a shutdown handler for graceful exit
-	router.OnShutdown(func() error {
-		os.Exit(0)
-		return nil
-	})
-
-	// Wait for interrupt signal
-	s := make(chan os.Signal, 1)
-	signal.Notify(s, os.Interrupt)
-	<-s
-
-	return nil
 }
