@@ -6,6 +6,7 @@ package ws
 
 import (
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -17,6 +18,7 @@ var DefaultUpgraderKSMUX = Upgrader{
 	ReadBufferSize:    1024,
 	WriteBufferSize:   1024,
 	HandshakeTimeout:  10 * time.Second,
+	WriteBufferPool:   &sync.Pool{New: func() interface{} { return writePoolData{buf: make([]byte, 1024)} }},
 }
 
 func UpgradeConnection(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*Conn, error) {
