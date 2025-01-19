@@ -96,7 +96,9 @@ func NewPool() *Pool {
 		stopCh:   make(chan struct{}),
 	}
 	for i := 0; i < NumShards; i++ {
-		p.shards[i] = &shard{}
+		p.shards[i] = &shard{
+			connections: kmap.New[*ws.Conn, bool](),
+		}
 	}
 
 	// Start session cleanup goroutine
