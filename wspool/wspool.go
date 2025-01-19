@@ -408,6 +408,8 @@ type Conn struct {
 }
 
 func (c *Conn) WriteJSON(v any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.conn.WriteJSON(v)
 }
 
