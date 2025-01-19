@@ -90,6 +90,7 @@ type shard struct {
 // NewPool creates a new connection pool optimized for high concurrency
 func NewPool() *Pool {
 	p := &Pool{
+		clients:  kmap.New[string, *Client](100),
 		shards:   make([]*shard, NumShards),
 		maxConns: int32(DefaultMaxConns),
 		stopCh:   make(chan struct{}),
