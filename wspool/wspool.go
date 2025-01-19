@@ -84,7 +84,6 @@ type Pool struct {
 // shard manages a subset of connections with optimized locking
 type shard struct {
 	connections *kmap.SafeMap[*ws.Conn, bool]
-	mu          sync.RWMutex // Use RWMutex for better read concurrency
 }
 
 // NewPool creates a new connection pool optimized for high concurrency
@@ -118,6 +117,9 @@ func (p *Pool) cleanupSessions() {
 			now := time.Now()
 			p.clients.Range(func(key string, client *Client) bool {
 				client.mu.Lock()
+				if client.connections == nil {
+					client.connections = kmap.New[*ws.Conn, *Conn](100)
+				}
 				if now.Sub(client.lastActive) > SessionTimeout {
 					// Close all client connections
 					client.connections.Range(func(_ *ws.Conn, value *Conn) bool {
@@ -155,6 +157,9 @@ func (p *Pool) Add(conn *ws.Conn) *Conn {
 	conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
 
 	s := p.getShard()
+	if s.connections == nil {
+		s.connections = kmap.New[*ws.Conn, bool](100)
+	}
 	if _, loaded := s.connections.GetOrSet(conn, true); !loaded {
 		atomic.AddInt32(&p.connCount, 1)
 	}
@@ -180,6 +185,9 @@ func (p *Pool) AddFromHeaders(conn *ws.Conn, headers http.Header) (*Conn, string
 	})
 
 	s := p.getShard()
+	if s.connections == nil {
+		s.connections = kmap.New[*ws.Conn, bool](100)
+	}
 
 	// Create connection with client ID
 	c := &Conn{
@@ -188,6 +196,10 @@ func (p *Pool) AddFromHeaders(conn *ws.Conn, headers http.Header) (*Conn, string
 		mu:       sync.RWMutex{},
 		pool:     p,
 		shard:    s,
+	}
+
+	if client.connections == nil {
+		client.connections = kmap.New[*ws.Conn, *Conn](100)
 	}
 
 	// Store in client's connections
@@ -218,6 +230,10 @@ func (p *Pool) AddClient(conn *ws.Conn, clientID string) *Conn {
 
 	s := p.getShard()
 
+	if s.connections == nil {
+		s.connections = kmap.New[*ws.Conn, bool](100)
+	}
+
 	// Create connection with client ID
 	c := &Conn{
 		conn:     conn,
@@ -227,6 +243,10 @@ func (p *Pool) AddClient(conn *ws.Conn, clientID string) *Conn {
 		shard:    s,
 	}
 
+	if client.connections == nil {
+		client.connections = kmap.New[*ws.Conn, *Conn](100)
+	}
+
 	// Store in client's connections
 	client.connections.Set(conn, c)
 
@@ -234,13 +254,16 @@ func (p *Pool) AddClient(conn *ws.Conn, clientID string) *Conn {
 	if _, loaded := s.connections.GetOrSet(conn, true); !loaded {
 		atomic.AddInt32(&p.connCount, 1)
 	}
-
 	return c
 }
 
 // BroadcastText sends a message to all connections of a specific client
 func (p *Pool) BroadcastText(clientID string, messageType int, data []byte) error {
 	if client, ok := p.clients.Get(clientID); ok {
+		if client.connections == nil {
+			client.connections = kmap.New[*ws.Conn, *Conn](100)
+			return fmt.Errorf("no connection found")
+		}
 		client.connections.Range(func(key *ws.Conn, conn *Conn) bool {
 			err := conn.WriteMessage(messageType, data)
 			if err != nil {
@@ -258,6 +281,10 @@ func (p *Pool) BroadcastText(clientID string, messageType int, data []byte) erro
 func (p *Pool) BroadcastJson(clientID string, value any) error {
 	if client, ok := p.clients.Get(clientID); ok {
 		var lastErr error
+		if client.connections == nil {
+			client.connections = kmap.New[*ws.Conn, *Conn](100)
+			return fmt.Errorf("no connection found")
+		}
 		client.connections.Range(func(key *ws.Conn, conn *Conn) bool {
 			if err := conn.WriteJSON(value); err != nil {
 				fmt.Printf("error broadcasting to connection: %v\n", err)
@@ -279,7 +306,12 @@ func (p *Pool) BroadcastJson(clientID string, value any) error {
 // GetClientConnectionCount returns the number of active connections for a client
 func (p *Pool) GetClientConnectionCount(clientID string) int {
 	count := 0
+
 	if client, ok := p.clients.Get(clientID); ok {
+		if client.connections == nil {
+			client.connections = kmap.New[*ws.Conn, *Conn](100)
+			return 0
+		}
 		count = client.connections.Len()
 	}
 	return count
@@ -348,8 +380,12 @@ func (p *Pool) GetSessionData(clientID string, key string) (interface{}, error) 
 func (p *Pool) Close() {
 	close(p.stopCh)
 	for _, s := range p.shards {
-		s.mu.Lock()
-		s.connections.Range(func(conn *ws.Conn, value bool) bool {
+		if s.connections == nil {
+			s.connections = kmap.New[*ws.Conn, bool](100)
+			continue
+		}
+		connections := s.connections.Keys()
+		for _, conn := range connections {
 			if conn != nil {
 				_ = conn.WriteControl(
 					ws.CloseMessage,
@@ -358,9 +394,7 @@ func (p *Pool) Close() {
 				)
 				conn.Close()
 			}
-			return true
-		})
-		s.mu.Unlock()
+		}
 	}
 }
 
@@ -374,38 +408,28 @@ type Conn struct {
 }
 
 func (c *Conn) WriteJSON(v any) error {
-	c.shard.mu.Lock()
-	defer c.shard.mu.Unlock()
-	fmt.Println("writing json", v)
 	return c.conn.WriteJSON(v)
 }
+
 func (c *Conn) ReadJSON(v interface{}) error {
-	c.shard.mu.RLock()
-	defer c.shard.mu.RUnlock()
 	return c.conn.ReadJSON(v)
 }
 
 // WriteMessage sends a message using read-write mutex for better concurrency
 func (c *Conn) WriteMessage(messageType int, data []byte) error {
-	// Use write lock for writes
-	c.shard.mu.Lock()
-	defer c.shard.mu.Unlock()
-
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// Reset write deadline
 	c.conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-
 	return c.conn.WriteMessage(messageType, data)
 }
 
 // ReadMessage reads a message with proper locking
 func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
-	// Use read lock for reads
-	c.shard.mu.RLock()
-	defer c.shard.mu.RUnlock()
-
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	// Reset read deadline
 	c.conn.SetReadDeadline(time.Now().Add(ReadTimeout))
-
 	return c.conn.ReadMessage()
 }
 
@@ -432,6 +456,7 @@ func DefaultPool() *Pool {
 func (c *Conn) GetClientID() string {
 	return c.clientID
 }
+
 func (c *Conn) SetClientID(clientID string) {
 	c.clientID = clientID
 }
@@ -443,15 +468,19 @@ func (c *Conn) WSConn() *ws.Conn {
 func (c *Conn) Pool() *Pool {
 	return c.pool
 }
+
 func (c *Conn) MutexLock() {
 	c.mu.Lock()
 }
+
 func (c *Conn) MutexRLock() {
 	c.mu.RLock()
 }
+
 func (c *Conn) MutexUnlock() {
 	c.mu.Unlock()
 }
+
 func (c *Conn) MutexRUnlock() {
 	c.mu.RUnlock()
 }
@@ -459,12 +488,20 @@ func (c *Conn) MutexRUnlock() {
 // RemoveConnection removes a connection from both the shard and client maps
 func (p *Pool) RemoveConnection(conn *Conn) {
 	if client, ok := p.clients.Get(conn.clientID); ok {
+		if client.connections == nil {
+			client.connections = kmap.New[*ws.Conn, *Conn](100)
+			return
+		}
 		client.connections.Delete(conn.conn)
 		// If this was the last connection for this client, remove the client
 		count := client.connections.Len()
 		if count == 0 {
 			p.clients.Delete(conn.clientID)
 		}
+	}
+	if conn.shard.connections == nil {
+		conn.shard.connections = kmap.New[*ws.Conn, bool](100)
+		return
 	}
 	conn.shard.connections.Delete(conn.conn)
 	atomic.AddInt32(&p.connCount, -1)
