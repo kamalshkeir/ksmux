@@ -10,27 +10,13 @@ import (
 	"github.com/kamalshkeir/ksmux/jsonencdec"
 )
 
-// WriteJSON writes the JSON encoding of v as a message.
-//
-// Deprecated: Use c.WriteJSON instead.
-func WriteJSON(c *Conn, v interface{}) error {
-	return c.WriteJSON(v)
-}
-
-// WriteJSON writes the JSON encoding of v as a message.
-func (c *Conn) WriteJSON(v interface{}) error {
-	err := c.writeJSON(v)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
+// writeJSON writes the JSON encoding of v as a message.
 func (c *Conn) writeJSON(v interface{}) error {
 	w, err := c.NextWriter(TextMessage)
 	if err != nil {
 		return err
 	}
+	defer w.Close()
 
 	by, err1 := jsonencdec.DefaultMarshal(v)
 	if err1 != nil {
@@ -40,17 +26,11 @@ func (c *Conn) writeJSON(v interface{}) error {
 	if err2 != nil {
 		return err2
 	}
-	err3 := w.Close()
-	if err3 != nil {
-		return err3
-	}
 	return nil
 }
 
 // ReadJSON reads the next JSON-encoded message from the connection and stores
 // it in the value pointed to by v.
-//
-// Deprecated: Use c.ReadJSON instead.
 func ReadJSON(c *Conn, v interface{}) error {
 	return c.ReadJSON(v)
 }

@@ -8,8 +8,15 @@ import (
 	"time"
 
 	"github.com/kamalshkeir/kmap"
+	"github.com/kamalshkeir/ksmux/jsonencdec"
 	"github.com/kamalshkeir/ksmux/ws"
 )
+
+// ActorOP and MessageOP types from opt-actor.go
+type MessageOP = ws.MessageOP
+type ActorOP = ws.ActorOP
+
+var NewActorOP = ws.NewActorOP
 
 func init() {
 	// Configure default dialer for clients
@@ -19,22 +26,26 @@ func init() {
 }
 
 var (
-	DefaultMaxConns        = 10000 // Support up to 10k connections
-	NumShards              = 64    // More shards for better distribution
-	ReadBufferSize         = 4096  // 4KB read buffer
-	WriteBufferSize        = 4096  // 4KB write buffer
+	DefaultMaxConns        = 20000
+	NumShards              = 128
+	ReadBufferSize         = 4096 // Doubled from 4KB to 8KB
+	WriteBufferSize        = 4096 // Doubled from 4KB to 8KB
 	ReadTimeout            = 60 * time.Second
 	WriteTimeout           = 10 * time.Second
 	HandshakeTimeout       = 10 * time.Second
-	SessionTimeout         = 30 * time.Minute // Session expires after 30 minutes of inactivity
-	CleanupInterval        = 5 * time.Minute  // Run cleanup every 5 minutes
-	defaultPool            = NewPool()        // Global pool for default upgrades
+	SessionTimeout         = 30 * time.Minute
+	CleanupInterval        = 5 * time.Minute
+	defaultPool            = NewPool()
 	DefaultUpgraderWsactor = ws.Upgrader{
 		EnableCompression: true,
 		ReadBufferSize:    ReadBufferSize,
 		WriteBufferSize:   WriteBufferSize,
 		HandshakeTimeout:  HandshakeTimeout,
-		WriteBufferPool:   &sync.Pool{New: func() interface{} { return writePoolData{buf: make([]byte, WriteBufferSize)} }},
+		WriteBufferPool: &sync.Pool{
+			New: func() interface{} {
+				return writePoolData{buf: make([]byte, WriteBufferSize)}
+			},
+		},
 	}
 )
 
@@ -89,10 +100,10 @@ type shard struct {
 // NewPool creates a new connection pool optimized for high concurrency
 func NewPool() *Pool {
 	p := &Pool{
-		clients:  kmap.New[string, *Client](100),
 		shards:   make([]*shard, NumShards),
 		maxConns: int32(DefaultMaxConns),
 		stopCh:   make(chan struct{}),
+		clients:  kmap.New[string, *Client](),
 	}
 	for i := 0; i < NumShards; i++ {
 		p.shards[i] = &shard{
@@ -104,6 +115,10 @@ func NewPool() *Pool {
 	go p.cleanupSessions()
 
 	return p
+}
+
+func (p *Pool) Clients() *kmap.SafeMap[string, *Client] {
+	return p.clients
 }
 
 // cleanupSessions periodically removes expired sessions
@@ -118,7 +133,7 @@ func (p *Pool) cleanupSessions() {
 			p.clients.Range(func(key string, client *Client) bool {
 				client.mu.Lock()
 				if client.connections == nil {
-					client.connections = kmap.New[*ws.Conn, *Conn](100)
+					client.connections = kmap.New[*ws.Conn, *Conn]()
 				}
 				if now.Sub(client.lastActive) > SessionTimeout {
 					// Close all client connections
@@ -158,7 +173,7 @@ func (p *Pool) Add(conn *ws.Conn) *Conn {
 
 	s := p.getShard()
 	if s.connections == nil {
-		s.connections = kmap.New[*ws.Conn, bool](100)
+		s.connections = kmap.New[*ws.Conn, bool]()
 	}
 	if _, loaded := s.connections.GetOrSet(conn, true); !loaded {
 		atomic.AddInt32(&p.connCount, 1)
@@ -186,7 +201,7 @@ func (p *Pool) AddFromHeaders(conn *ws.Conn, headers http.Header) (*Conn, string
 
 	s := p.getShard()
 	if s.connections == nil {
-		s.connections = kmap.New[*ws.Conn, bool](100)
+		s.connections = kmap.New[*ws.Conn, bool]()
 	}
 
 	// Create connection with client ID
@@ -199,7 +214,7 @@ func (p *Pool) AddFromHeaders(conn *ws.Conn, headers http.Header) (*Conn, string
 	}
 
 	if client.connections == nil {
-		client.connections = kmap.New[*ws.Conn, *Conn](100)
+		client.connections = kmap.New[*ws.Conn, *Conn]()
 	}
 
 	// Store in client's connections
@@ -231,7 +246,7 @@ func (p *Pool) AddClient(conn *ws.Conn, clientID string) *Conn {
 	s := p.getShard()
 
 	if s.connections == nil {
-		s.connections = kmap.New[*ws.Conn, bool](100)
+		s.connections = kmap.New[*ws.Conn, bool]()
 	}
 
 	// Create connection with client ID
@@ -244,7 +259,7 @@ func (p *Pool) AddClient(conn *ws.Conn, clientID string) *Conn {
 	}
 
 	if client.connections == nil {
-		client.connections = kmap.New[*ws.Conn, *Conn](100)
+		client.connections = kmap.New[*ws.Conn, *Conn]()
 	}
 
 	// Store in client's connections
@@ -261,7 +276,7 @@ func (p *Pool) AddClient(conn *ws.Conn, clientID string) *Conn {
 func (p *Pool) BroadcastText(clientID string, messageType int, data []byte) error {
 	if client, ok := p.clients.Get(clientID); ok {
 		if client.connections == nil {
-			client.connections = kmap.New[*ws.Conn, *Conn](100)
+			client.connections = kmap.New[*ws.Conn, *Conn]()
 			return fmt.Errorf("no connection found")
 		}
 		client.connections.Range(func(key *ws.Conn, conn *Conn) bool {
@@ -282,7 +297,7 @@ func (p *Pool) BroadcastJson(clientID string, value any) error {
 	if client, ok := p.clients.Get(clientID); ok {
 		var lastErr error
 		if client.connections == nil {
-			client.connections = kmap.New[*ws.Conn, *Conn](100)
+			client.connections = kmap.New[*ws.Conn, *Conn]()
 			return fmt.Errorf("no connection found")
 		}
 		client.connections.Range(func(key *ws.Conn, conn *Conn) bool {
@@ -309,7 +324,7 @@ func (p *Pool) GetClientConnectionCount(clientID string) int {
 
 	if client, ok := p.clients.Get(clientID); ok {
 		if client.connections == nil {
-			client.connections = kmap.New[*ws.Conn, *Conn](100)
+			client.connections = kmap.New[*ws.Conn, *Conn]()
 			return 0
 		}
 		count = client.connections.Len()
@@ -332,8 +347,7 @@ func (p *Pool) GetSession(clientID string) *SessionState {
 	return nil
 }
 
-// SetSessionData sets a key-value pair in the client's session
-func (p *Pool) SetSessionData(clientID string, key string, value interface{}) error {
+func (p *Pool) SetSessionData(clientID string, key string, value any) error {
 	if client, ok := p.clients.Get(clientID); ok {
 		client.mu.Lock()
 		defer client.mu.Unlock()
@@ -355,7 +369,6 @@ func (p *Pool) SetSessionData(clientID string, key string, value interface{}) er
 	return fmt.Errorf("client %s not found", clientID)
 }
 
-// GetSessionData retrieves a value from the client's session
 func (p *Pool) GetSessionData(clientID string, key string) (interface{}, error) {
 	if client, ok := p.clients.Get(clientID); ok {
 		client.mu.RLock()
@@ -376,12 +389,12 @@ func (p *Pool) GetSessionData(clientID string, key string) (interface{}, error) 
 	return nil, fmt.Errorf("client %s not found", clientID)
 }
 
-// Close closes all connections and stops the cleanup goroutine
 func (p *Pool) Close() {
 	close(p.stopCh)
+
 	for _, s := range p.shards {
 		if s.connections == nil {
-			s.connections = kmap.New[*ws.Conn, bool](100)
+			s.connections = kmap.New[*ws.Conn, bool]()
 			continue
 		}
 		connections := s.connections.Keys()
@@ -400,17 +413,88 @@ func (p *Pool) Close() {
 
 // Conn represents a WebSocket connection with client identification
 type Conn struct {
-	conn     *ws.Conn
-	clientID string
-	mu       sync.RWMutex
-	pool     *Pool
-	shard    *shard
+	conn       *ws.Conn
+	clientID   string
+	mu         sync.RWMutex
+	pool       *Pool
+	shard      *shard
+	writeCh    chan writeOp
+	writeActor *ActorOP
 }
 
-func (c *Conn) WriteJSON(v any) error {
+type writeOp struct {
+	data    interface{}
+	errChan chan error
+}
+
+// Pool for write operations to reduce lock contention
+var writePool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 0, 4096)
+	},
+}
+
+// Pool for error channels
+var errChanPool = sync.Pool{
+	New: func() interface{} {
+		return make(chan error, 1)
+	},
+}
+
+func (c *Conn) initWriteHandler() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.conn.WriteJSON(v)
+
+	if c.writeCh == nil {
+		// Increase channel buffer size for better throughput
+		c.writeCh = make(chan writeOp, 4096)
+		go func() {
+			// Pre-allocate buffer for JSON marshaling
+			buf := make([]byte, 0, 4096)
+			for op := range c.writeCh {
+				// Reset write deadline once per operation
+				c.conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
+
+				// Marshal with buffer reuse
+				buf = buf[:0]
+				data, err := jsonencdec.DefaultMarshal(op.data)
+				if err != nil {
+					op.errChan <- err
+					continue
+				}
+
+				// Write marshaled data
+				if err := c.conn.WriteMessage(ws.TextMessage, data); err != nil {
+					op.errChan <- err
+				} else {
+					op.errChan <- nil
+				}
+			}
+		}()
+	}
+}
+
+// WriteJSON writes a JSON message using the write channel for synchronization
+func (c *Conn) WriteJSON(v interface{}) error {
+	c.initWriteHandler()
+
+	// Get error channel from pool
+	errChan := errChanPool.Get().(chan error)
+	defer func() {
+		// Clear channel before returning to pool
+		select {
+		case <-errChan:
+		default:
+		}
+		errChanPool.Put(errChan)
+	}()
+
+	// Send write operation
+	c.writeCh <- writeOp{
+		data:    v,
+		errChan: errChan,
+	}
+	return <-errChan
 }
 
 func (c *Conn) ReadJSON(v interface{}) error {
@@ -419,11 +503,36 @@ func (c *Conn) ReadJSON(v interface{}) error {
 
 // WriteMessage sends a message using read-write mutex for better concurrency
 func (c *Conn) WriteMessage(messageType int, data []byte) error {
+	// Fast path for small messages
+	if len(data) < 1024 {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
+		return c.conn.WriteMessage(messageType, data)
+	}
+
+	// For larger messages, use buffer pool and chunking
+	buf := writePool.Get().([]byte)
+	defer writePool.Put(buf)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Reset write deadline
+
+	// Set deadline once for entire operation
 	c.conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-	return c.conn.WriteMessage(messageType, data)
+
+	// Write in chunks to avoid large syscalls
+	const chunkSize = 32 * 1024 // 32KB chunks
+	for i := 0; i < len(data); i += chunkSize {
+		end := i + chunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		if err := c.conn.WriteMessage(messageType, data[i:end]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ReadMessage reads a message with proper locking
@@ -437,8 +546,9 @@ func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
 
 // Close performs a clean WebSocket close handshake
 func (c *Conn) Close() error {
-	// Remove from pool first
-	c.pool.RemoveConnection(c)
+	if c.writeCh != nil {
+		close(c.writeCh)
+	}
 
 	// Send close frame with timeout
 	_ = c.conn.WriteControl(
@@ -447,7 +557,11 @@ func (c *Conn) Close() error {
 		time.Now().Add(WriteTimeout),
 	)
 
-	return c.conn.Close()
+	err := c.conn.Close()
+	if c.pool != nil {
+		c.pool.RemoveConnection(c)
+	}
+	return err
 }
 
 func DefaultPool() *Pool {
@@ -491,7 +605,7 @@ func (c *Conn) MutexRUnlock() {
 func (p *Pool) RemoveConnection(conn *Conn) {
 	if client, ok := p.clients.Get(conn.clientID); ok {
 		if client.connections == nil {
-			client.connections = kmap.New[*ws.Conn, *Conn](100)
+			client.connections = kmap.New[*ws.Conn, *Conn]()
 			return
 		}
 		client.connections.Delete(conn.conn)
@@ -501,10 +615,11 @@ func (p *Pool) RemoveConnection(conn *Conn) {
 			p.clients.Delete(conn.clientID)
 		}
 	}
-	if conn.shard.connections == nil {
-		conn.shard.connections = kmap.New[*ws.Conn, bool](100)
-		return
-	}
-	conn.shard.connections.Delete(conn.conn)
-	atomic.AddInt32(&p.connCount, -1)
+}
+
+// Pool for message buffers
+var messagePool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 0, 32*1024) // 32KB initial size
+	},
 }
