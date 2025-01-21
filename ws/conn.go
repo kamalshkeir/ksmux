@@ -195,20 +195,23 @@ var (
 	sharedReadActors   []*ActorOP
 	numBackupActors    = runtime.NumCPU() * 4 // Increased from 2x to 4x CPU cores
 	numReadActors      = runtime.NumCPU() * 2 // Increased from 1x to 2x CPU cores
+	actorsInitOnce     sync.Once              // Ensure actors are initialized only once
 )
 
 func init() {
-	// Initialize backup actors
-	sharedBackupActors = make([]*ActorOP, numBackupActors)
-	for i := 0; i < numBackupActors; i++ {
-		sharedBackupActors[i] = InitBackupActor()
-	}
+	actorsInitOnce.Do(func() {
+		// Initialize backup actors
+		sharedBackupActors = make([]*ActorOP, numBackupActors)
+		for i := 0; i < numBackupActors; i++ {
+			sharedBackupActors[i] = InitBackupActor()
+		}
 
-	// Initialize read actors
-	sharedReadActors = make([]*ActorOP, numReadActors)
-	for i := 0; i < numReadActors; i++ {
-		sharedReadActors[i] = InitReadActor()
-	}
+		// Initialize read actors
+		sharedReadActors = make([]*ActorOP, numReadActors)
+		for i := 0; i < numReadActors; i++ {
+			sharedReadActors[i] = InitReadActor()
+		}
+	})
 }
 
 func newMaskKey() [4]byte {
@@ -613,12 +616,32 @@ func (c *Conn) WriteJSONBatch(messages []interface{}) error {
 func (c *Conn) Close() error {
 	if c.writeQueue != nil {
 		close(c.writeQueue)
+		<-c.writeDone // Wait for write loop to finish
 	}
 	if c.messageReader != nil {
 		c.messageReader.Close()
 		c.messageReader = nil
 	}
 	return c.conn.Close()
+}
+
+// CleanupActors stops all shared actors - should be called during application shutdown
+func CleanupActors() {
+	// Stop backup actors
+	for _, actor := range sharedBackupActors {
+		if actor != nil {
+			actor.Stop()
+		}
+	}
+	sharedBackupActors = nil
+
+	// Stop read actors
+	for _, actor := range sharedReadActors {
+		if actor != nil {
+			actor.Stop()
+		}
+	}
+	sharedReadActors = nil
 }
 
 // Subprotocol returns the negotiated protocol for the connection.

@@ -54,6 +54,10 @@ func UpgradeConnection(w http.ResponseWriter, r *http.Request, responseHeader ht
 	return wsConn, nil
 }
 
+func CleanUpActors() {
+	ws.CleanupActors()
+}
+
 // SessionState represents the current state of a client session
 type SessionState struct {
 	Data       map[string]interface{}
@@ -125,17 +129,29 @@ func (p *Pool) cleanupSessions() {
 			now := time.Now()
 			p.clients.Range(func(key string, client *Client) bool {
 				client.mu.Lock()
-				if client.connections == nil {
-					client.connections = kmap.New[*ws.Conn, *Conn]()
-				}
 				if now.Sub(client.lastActive) > SessionTimeout {
-					// Close all client connections
-					client.connections.Range(func(_ *ws.Conn, value *Conn) bool {
-						if value != nil {
-							value.Close()
-						}
-						return true
-					})
+					if client.connections != nil {
+						// Close all client connections
+						client.connections.Range(func(conn *ws.Conn, value *Conn) bool {
+							if value != nil {
+								// Send close frame before closing
+								_ = conn.WriteControl(
+									ws.CloseMessage,
+									ws.FormatCloseMessage(ws.CloseNormalClosure, "session expired"),
+									time.Now().Add(WriteTimeout),
+								)
+								value.Close()
+							}
+							return true
+						})
+						client.connections.Clear()
+					}
+					// Clear session data
+					if client.session != nil {
+						client.session.mu.Lock()
+						client.session.Data = nil
+						client.session.mu.Unlock()
+					}
 					// Remove client from pool
 					p.clients.Delete(key)
 				}
@@ -379,11 +395,32 @@ func (p *Pool) GetSessionData(clientID string, key string) (interface{}, error) 
 }
 
 func (p *Pool) Close() {
+	// Signal cleanup goroutine to stop
 	close(p.stopCh)
 
+	// Clear all clients
+	p.clients.Range(func(clientID string, client *Client) bool {
+		if client.connections != nil {
+			client.connections.Range(func(conn *ws.Conn, c *Conn) bool {
+				if conn != nil {
+					_ = conn.WriteControl(
+						ws.CloseMessage,
+						ws.FormatCloseMessage(ws.CloseNormalClosure, "server shutdown"),
+						time.Now().Add(WriteTimeout),
+					)
+					conn.Close()
+				}
+				return true
+			})
+			client.connections.Clear()
+		}
+		return true
+	})
+	p.clients.Clear()
+
+	// Clear all shards
 	for _, s := range p.shards {
 		if s.connections == nil {
-			s.connections = kmap.New[*ws.Conn, bool]()
 			continue
 		}
 		connections := s.connections.Keys()
@@ -397,7 +434,14 @@ func (p *Pool) Close() {
 				conn.Close()
 			}
 		}
+		s.connections.Clear()
 	}
+
+	// Reset connection count
+	atomic.StoreInt32(&p.connCount, 0)
+
+	// Cleanup actors
+	ws.CleanupActors()
 }
 
 // Conn represents a WebSocket connection with client identification
@@ -508,17 +552,37 @@ func (c *Conn) MutexRUnlock() {
 
 // RemoveConnection removes a connection from both the shard and client maps
 func (p *Pool) RemoveConnection(conn *Conn) {
+	if conn == nil {
+		return
+	}
+
+	// Remove from client's connections
 	if client, ok := p.clients.Get(conn.clientID); ok {
-		if client.connections == nil {
-			client.connections = kmap.New[*ws.Conn, *Conn]()
-			return
+		if client.connections != nil {
+			client.connections.Delete(conn.conn)
+			// If this was the last connection for this client, remove the client
+			if client.connections.Len() == 0 {
+				// Clear session data if it exists
+				if client.session != nil {
+					client.session.mu.Lock()
+					client.session.Data = nil
+					client.session.mu.Unlock()
+				}
+				p.clients.Delete(conn.clientID)
+			}
 		}
-		client.connections.Delete(conn.conn)
-		// If this was the last connection for this client, remove the client
-		count := client.connections.Len()
-		if count == 0 {
-			p.clients.Delete(conn.clientID)
-		}
+	}
+
+	// Remove from shard
+	if conn.shard != nil && conn.shard.connections != nil {
+		conn.shard.connections.Delete(conn.conn)
+		atomic.AddInt32(&p.connCount, -1)
+	}
+
+	// Clear write channel
+	if conn.writeCh != nil {
+		close(conn.writeCh)
+		conn.writeCh = nil
 	}
 }
 
