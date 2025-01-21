@@ -5,34 +5,27 @@
 package ws
 
 import (
-	"io"
+	"sync"
 
-	"github.com/kamalshkeir/ksmux/jsonencdec"
+	"encoding/json"
 )
 
-// writeJSON writes the JSON encoding of v as a message.
-func (c *Conn) writeJSON(v interface{}) error {
-	w, err := c.NextWriter(TextMessage)
+var (
+	decoderPool = sync.Pool{
+		New: func() interface{} {
+			return json.NewDecoder(nil)
+		},
+	}
+)
+
+// WriteJSON writes the JSON encoding of v as a message through the actor
+func (c *Conn) WriteJSON(v interface{}) error {
+	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	defer w.Close()
 
-	by, err1 := jsonencdec.DefaultMarshal(v)
-	if err1 != nil {
-		return err1
-	}
-	_, err2 := w.Write(by)
-	if err2 != nil {
-		return err2
-	}
-	return nil
-}
-
-// ReadJSON reads the next JSON-encoded message from the connection and stores
-// it in the value pointed to by v.
-func ReadJSON(c *Conn, v interface{}) error {
-	return c.ReadJSON(v)
+	return c.WriteMessage(TextMessage, data)
 }
 
 // ReadJSON reads the next JSON-encoded message from the connection and stores
@@ -41,13 +34,10 @@ func (c *Conn) ReadJSON(v interface{}) error {
 	if err != nil {
 		return err
 	}
-	by, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-	err = jsonencdec.DefaultUnmarshal(by, v)
-	if err == io.EOF {
-		err = io.ErrUnexpectedEOF
-	}
+
+	dec := decoderPool.Get().(*json.Decoder)
+	dec = json.NewDecoder(r)
+	err = dec.Decode(v)
+	decoderPool.Put(dec)
 	return err
 }

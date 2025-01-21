@@ -11,12 +11,15 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
-	"github.com/kamalshkeir/ksmux/jsonencdec"
+	"encoding/json"
+
 	"github.com/kamalshkeir/lg"
 )
 
@@ -42,11 +45,11 @@ const (
 	noFrame           = -1
 
 	// Actor configuration
-	actorQueueSize = 1 << 16 // 65536 messages
-	actorBatchSize = 1000    // Process 1000 messages per batch
+	actorQueueSize = 1 << 18 // 262144 messages (increased from 65536)
+	actorBatchSize = 1000    // Increased from 500 for better throughput
 
 	// Constants for write handling
-	writeQueueSize = 65536 // Increased from 1024 to handle more messages
+	writeQueueSize = 65536 // Increased from 32768 for more buffering
 )
 
 // Close codes defined in RFC 6455, section 11.7.
@@ -187,7 +190,26 @@ var (
 	errBadWriteOpCode      = errors.New("websocket: bad write message type")
 	errWriteClosed         = errors.New("websocket: write closed")
 	errInvalidControlFrame = errors.New("websocket: invalid control frame")
+	// Package level shared actors
+	sharedBackupActors []*ActorOP
+	sharedReadActors   []*ActorOP
+	numBackupActors    = runtime.NumCPU() * 4 // Increased from 2x to 4x CPU cores
+	numReadActors      = runtime.NumCPU() * 2 // Increased from 1x to 2x CPU cores
 )
+
+func init() {
+	// Initialize backup actors
+	sharedBackupActors = make([]*ActorOP, numBackupActors)
+	for i := 0; i < numBackupActors; i++ {
+		sharedBackupActors[i] = InitBackupActor()
+	}
+
+	// Initialize read actors
+	sharedReadActors = make([]*ActorOP, numReadActors)
+	for i := 0; i < numReadActors; i++ {
+		sharedReadActors[i] = InitReadActor()
+	}
+}
 
 func newMaskKey() [4]byte {
 	n := rand.Uint32()
@@ -260,7 +282,6 @@ type Conn struct {
 	writeDeadline time.Time
 	writeQueue    chan *writeRequest // Primary write queue
 	writeDone     chan struct{}      // Signals write loop completion
-	backupActor   *ActorOP           // Backup actor for overflow
 
 	// Read fields
 	readErr       error
@@ -287,11 +308,34 @@ type Conn struct {
 	newDecompressionReader func(io.Reader) io.ReadCloser
 }
 
+// InitBackupActor initializes the shared backup actor at application startup
+func InitBackupActor() *ActorOP {
+	ac := NewActorOP(actorQueueSize, actorBatchSize, func(msgs []MessageOP) {
+		for _, msg := range msgs {
+			if msg == nil {
+				continue
+			}
+			wmsg := msg.(*writeRequest)
+			for _, frame := range wmsg.frames {
+				_, err := wmsg.conn.Write(frame)
+				if err != nil {
+					wmsg.done <- err
+					return
+				}
+			}
+			wmsg.done <- nil
+		}
+	})
+	ac.Start()
+	return ac
+}
+
 // writeRequest represents a write operation
 type writeRequest struct {
 	frames   [][]byte   // Frames to write
 	deadline time.Time  // Write deadline
 	done     chan error // Signals completion with error if any
+	conn     net.Conn   // Connection to write to
 }
 
 func newConn(conn net.Conn, isServer bool, readBufferSize, writeBufferSize int, writeBufferPool BufferPool, br *bufio.Reader, writeBuf []byte) *Conn {
@@ -324,26 +368,6 @@ func newConn(conn net.Conn, isServer bool, readBufferSize, writeBufferSize int, 
 		writeQueue:   make(chan *writeRequest, writeQueueSize),
 		writeDone:    make(chan struct{}),
 	}
-
-	// Initialize backup actor for overflow
-	c.backupActor = NewActorOP(actorQueueSize, actorBatchSize, func(msgs []MessageOP) {
-		for _, msg := range msgs {
-			if msg == nil {
-				continue
-			}
-			wmsg := msg.(*writeRequest)
-			for _, frame := range wmsg.frames {
-				c.conn.SetWriteDeadline(wmsg.deadline)
-				_, err := c.conn.Write(frame)
-				if err != nil {
-					wmsg.done <- err
-					return
-				}
-			}
-			wmsg.done <- nil
-		}
-	})
-	c.backupActor.Start()
 
 	// Start the write loop
 	go c.writeLoop()
@@ -406,6 +430,106 @@ func (c *Conn) prepareFrame(messageType int, data []byte) []byte {
 	return frame
 }
 
+// readRequest represents a read operation
+type readRequest struct {
+	conn *Conn
+	done chan readResult
+}
+
+type readResult struct {
+	messageType int
+	data        []byte
+	err         error
+}
+
+// InitReadActor initializes a read actor
+func InitReadActor() *ActorOP {
+	ac := NewActorOP(actorQueueSize, actorBatchSize, func(msgs []MessageOP) {
+		// Pre-allocate a buffer for each batch
+		buf := bufferPool.Get().([]byte)
+		defer bufferPool.Put(buf)
+
+		for _, msg := range msgs {
+			if msg == nil {
+				continue
+			}
+			req := msg.(*readRequest)
+			messageType, r, err := req.conn.NextReader()
+			if err != nil {
+				req.done <- readResult{messageType: messageType, err: err}
+				continue
+			}
+
+			// Grow buffer if needed
+			data, err := io.ReadAll(r)
+			if err != nil {
+				req.done <- readResult{messageType: messageType, err: err}
+				continue
+			}
+
+			// Copy data to avoid race conditions
+			dataCopy := make([]byte, len(data))
+			copy(dataCopy, data)
+
+			select {
+			case req.done <- readResult{
+				messageType: messageType,
+				data:        dataCopy,
+				err:         err,
+			}:
+			default:
+				// If we can't send the result immediately, keep trying
+				go func(result readResult) {
+					req.done <- result
+				}(readResult{messageType: messageType, data: dataCopy, err: err})
+			}
+		}
+	})
+	ac.Start()
+	return ac
+}
+
+// Buffer pool for read operations - increased size and preallocated
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 32*1024) // 32KB buffer - smaller but more efficient
+	},
+}
+
+// ReadMessage is a helper method for getting a reader using NextReader and
+// reading from that reader to a buffer.
+func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
+	// Fast path - direct read
+	var r io.Reader
+	messageType, r, err = c.NextReader()
+	if err != nil {
+		return messageType, nil, err
+	}
+
+	// Get buffer from pool
+	buf := bufferPool.Get().([]byte)
+
+	// Read into buffer
+	n, err := r.Read(buf)
+	if err == nil || err == io.EOF {
+		// Most messages will fit in the buffer
+		p = buf[:n]
+		return messageType, p, nil
+	}
+
+	// Message is larger than buffer, need to grow
+	if err == io.ErrShortBuffer {
+		// Return buffer to pool before allocating larger one
+		bufferPool.Put(buf)
+		p, err = io.ReadAll(r)
+		return messageType, p, err
+	}
+
+	// Return buffer and propagate error
+	bufferPool.Put(buf)
+	return messageType, nil, err
+}
+
 // WriteMessage writes a message with proper error handling and backpressure
 func (c *Conn) WriteMessage(messageType int, data []byte) error {
 	if c.writeErr != nil {
@@ -419,34 +543,46 @@ func (c *Conn) WriteMessage(messageType int, data []byte) error {
 	// Prepare frame
 	frame := c.prepareFrame(messageType, data)
 
-	// Create write request with longer deadline
+	// Try direct write first as it's fastest
+	_, err := c.conn.Write(frame)
+	if err == nil {
+		return nil
+	}
+
+	// Create write request
 	req := &writeRequest{
 		frames:   [][]byte{frame},
 		deadline: time.Now().Add(writeWait),
 		done:     make(chan error, 1),
+		conn:     c.conn,
 	}
 
-	// Try primary queue first with no wait
+	// Try primary queue with very short timeout
 	select {
 	case c.writeQueue <- req:
-		// Fast path succeeded
-	default:
-		// Queue full, try backup actor with retries
-		for i := 0; i < 3; i++ {
-			if c.backupActor.Send(req, 0) {
-				// Backup actor accepted the message
+		goto wait
+	case <-time.After(time.Microsecond):
+		// Queue full, continue to backup actors
+	}
+
+	// Try each backup actor multiple times
+	for i := 0; i < 3; i++ { // Try each actor up to 3 times
+		for _, actor := range sharedBackupActors {
+			if actor.Send(req, -1) {
 				goto wait
 			}
-			// Both primary and backup busy, small sleep before retry
-			time.Sleep(time.Microsecond * 100)
+			runtime.Gosched() // Give other goroutines a chance between attempts
 		}
+	}
 
-		// All retries failed, last attempt on primary with timeout
-		select {
-		case c.writeQueue <- req:
-		case <-time.After(writeWait):
-			return errWriteTimeout
-		}
+	// If we get here, all attempts failed
+	// Try primary queue one more time with longer timeout
+	select {
+	case c.writeQueue <- req:
+		goto wait
+	case <-time.After(time.Millisecond):
+		// Still failed, yield and retry everything
+		runtime.Gosched()
 	}
 
 wait:
@@ -459,20 +595,10 @@ wait:
 	}
 }
 
-// WriteJSON writes the JSON encoding of v as a message through the actor
-func (c *Conn) WriteJSON(v interface{}) error {
-	data, err := jsonencdec.DefaultMarshal(v)
-	if err != nil {
-		return err
-	}
-
-	return c.WriteMessage(TextMessage, data)
-}
-
 // WriteJSONBatch writes multiple JSON messages in a single batch operation
 func (c *Conn) WriteJSONBatch(messages []interface{}) error {
 	for _, v := range messages {
-		data, err := jsonencdec.DefaultMarshal(v)
+		data, err := json.Marshal(v)
 		if err != nil {
 			return err
 		}
@@ -487,9 +613,6 @@ func (c *Conn) WriteJSONBatch(messages []interface{}) error {
 func (c *Conn) Close() error {
 	if c.writeQueue != nil {
 		close(c.writeQueue)
-	}
-	if c.backupActor != nil {
-		c.backupActor.Stop()
 	}
 	if c.messageReader != nil {
 		c.messageReader.Close()
@@ -634,7 +757,7 @@ func FormatCloseMessage(closeCode int, text string) []byte {
 
 // jsonMarshal is a helper function to marshal JSON using the connection's configured marshaler
 func (c *Conn) jsonMarshal(v interface{}) ([]byte, error) {
-	return jsonencdec.DefaultMarshal(v)
+	return json.Marshal(v)
 }
 
 // WriteControl writes a control message with the given deadline. The allowed
@@ -665,7 +788,6 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 		maskBytes(key, 0, buf[6:])
 	}
 
-	c.conn.SetWriteDeadline(deadline)
 	_, err := c.conn.Write(buf)
 	if err != nil {
 		return c.writeFatal(err)
@@ -1218,18 +1340,6 @@ func (r *messageReader) Read(b []byte) (int, error) {
 
 func (r *messageReader) Close() error {
 	return nil
-}
-
-// ReadMessage is a helper method for getting a reader using NextReader and
-// reading from that reader to a buffer.
-func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
-	var r io.Reader
-	messageType, r, err = c.NextReader()
-	if err != nil {
-		return messageType, nil, err
-	}
-	p, err = io.ReadAll(r)
-	return messageType, p, err
 }
 
 // SetReadDeadline sets the read deadline on the underlying network connection.

@@ -2,6 +2,7 @@ package ws
 
 import (
 	"math/bits"
+	"math/rand"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -82,14 +83,30 @@ func (a *ActorOP) Stop() {
 //go:nosplit
 //go:noinline
 func (a *ActorOP) Send(msg MessageOP, workerID int) bool {
-	q := &a.queues[workerID]
-	tail := atomic.LoadInt32(&q.tail)
-	nextTail := (tail + 1) & a.mask
-
-	if nextTail == atomic.LoadInt32(&q.head) {
+	if workerID == -1 {
+		// Try all workers in sequence starting from a random one
+		startWorker := int(rand.Int31n(a.workerCount))
+		for i := 0; i < int(a.workerCount); i++ {
+			workerID = (startWorker + i) % int(a.workerCount)
+			q := &a.queues[workerID]
+			tail := atomic.LoadInt32(&q.tail)
+			nextTail := (tail + 1) & a.mask
+			if nextTail != atomic.LoadInt32(&q.head) {
+				q.buffer[tail] = msg
+				atomic.StoreInt32(&q.tail, nextTail)
+				return true
+			}
+		}
 		return false
 	}
 
+	// Direct worker selection
+	q := &a.queues[workerID]
+	tail := atomic.LoadInt32(&q.tail)
+	nextTail := (tail + 1) & a.mask
+	if nextTail == atomic.LoadInt32(&q.head) {
+		return false
+	}
 	q.buffer[tail] = msg
 	atomic.StoreInt32(&q.tail, nextTail)
 	return true
@@ -129,20 +146,32 @@ func (a *ActorOP) processBatch(workerID int) {
 				continue
 			}
 
-			available := int((tail - localHead) & a.mask)
-			if available > a.batchSize {
-				available = a.batchSize
-			}
+			// Process all available messages in smaller batches
+			for {
+				available := int((tail - localHead) & a.mask)
+				if available == 0 {
+					break
+				}
 
-			idx := localHead & a.mask
-			for i := 0; i < available; i++ {
-				batch[i] = q.buffer[idx]
-				idx = (idx + 1) & a.mask
-			}
+				// Process in smaller chunks to avoid holding up other operations
+				toProcess := available
+				if toProcess > a.batchSize {
+					toProcess = a.batchSize
+				}
 
-			localHead = (localHead + int32(available)) & a.mask
-			atomic.StoreInt32(&q.head, localHead)
-			a.handler(batch[:available])
+				idx := localHead & a.mask
+				for i := 0; i < toProcess; i++ {
+					batch[i] = q.buffer[idx]
+					idx = (idx + 1) & a.mask
+				}
+
+				a.handler(batch[:toProcess])
+				localHead = (localHead + int32(toProcess)) & a.mask
+				atomic.StoreInt32(&q.head, localHead)
+
+				// Check if more messages arrived
+				tail = atomic.LoadInt32(&q.tail)
+			}
 		}
 	}
 }

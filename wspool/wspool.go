@@ -8,15 +8,8 @@ import (
 	"time"
 
 	"github.com/kamalshkeir/kmap"
-	"github.com/kamalshkeir/ksmux/jsonencdec"
 	"github.com/kamalshkeir/ksmux/ws"
 )
-
-// ActorOP and MessageOP types from opt-actor.go
-type MessageOP = ws.MessageOP
-type ActorOP = ws.ActorOP
-
-var NewActorOP = ws.NewActorOP
 
 func init() {
 	// Configure default dialer for clients
@@ -167,10 +160,6 @@ func (p *Pool) Add(conn *ws.Conn) *Conn {
 		return nil
 	}
 
-	// Configure timeouts
-	conn.SetReadDeadline(time.Now().Add(ReadTimeout))
-	conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-
 	s := p.getShard()
 	if s.connections == nil {
 		s.connections = kmap.New[*ws.Conn, bool]()
@@ -311,7 +300,7 @@ func (p *Pool) BroadcastJson(clientID string, value any) error {
 			return true
 		})
 		if lastErr != nil {
-			return fmt.Errorf("broadcast had errors: %v", lastErr)
+			return fmt.Errorf("broadcast had errors %v", lastErr)
 		}
 		return nil
 	}
@@ -413,13 +402,12 @@ func (p *Pool) Close() {
 
 // Conn represents a WebSocket connection with client identification
 type Conn struct {
-	conn       *ws.Conn
-	clientID   string
-	mu         sync.RWMutex
-	pool       *Pool
-	shard      *shard
-	writeCh    chan writeOp
-	writeActor *ActorOP
+	conn     *ws.Conn
+	clientID string
+	mu       sync.RWMutex
+	pool     *Pool
+	shard    *shard
+	writeCh  chan writeOp
 }
 
 type writeOp struct {
@@ -441,60 +429,9 @@ var errChanPool = sync.Pool{
 	},
 }
 
-func (c *Conn) initWriteHandler() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.writeCh == nil {
-		// Increase channel buffer size for better throughput
-		c.writeCh = make(chan writeOp, 4096)
-		go func() {
-			// Pre-allocate buffer for JSON marshaling
-			buf := make([]byte, 0, 4096)
-			for op := range c.writeCh {
-				// Reset write deadline once per operation
-				c.conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-
-				// Marshal with buffer reuse
-				buf = buf[:0]
-				data, err := jsonencdec.DefaultMarshal(op.data)
-				if err != nil {
-					op.errChan <- err
-					continue
-				}
-
-				// Write marshaled data
-				if err := c.conn.WriteMessage(ws.TextMessage, data); err != nil {
-					op.errChan <- err
-				} else {
-					op.errChan <- nil
-				}
-			}
-		}()
-	}
-}
-
 // WriteJSON writes a JSON message using the write channel for synchronization
 func (c *Conn) WriteJSON(v interface{}) error {
-	c.initWriteHandler()
-
-	// Get error channel from pool
-	errChan := errChanPool.Get().(chan error)
-	defer func() {
-		// Clear channel before returning to pool
-		select {
-		case <-errChan:
-		default:
-		}
-		errChanPool.Put(errChan)
-	}()
-
-	// Send write operation
-	c.writeCh <- writeOp{
-		data:    v,
-		errChan: errChan,
-	}
-	return <-errChan
+	return c.conn.WriteJSON(v)
 }
 
 func (c *Conn) ReadJSON(v interface{}) error {
@@ -504,43 +441,11 @@ func (c *Conn) ReadJSON(v interface{}) error {
 // WriteMessage sends a message using read-write mutex for better concurrency
 func (c *Conn) WriteMessage(messageType int, data []byte) error {
 	// Fast path for small messages
-	if len(data) < 1024 {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-		return c.conn.WriteMessage(messageType, data)
-	}
-
-	// For larger messages, use buffer pool and chunking
-	buf := writePool.Get().([]byte)
-	defer writePool.Put(buf)
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Set deadline once for entire operation
-	c.conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
-
-	// Write in chunks to avoid large syscalls
-	const chunkSize = 32 * 1024 // 32KB chunks
-	for i := 0; i < len(data); i += chunkSize {
-		end := i + chunkSize
-		if end > len(data) {
-			end = len(data)
-		}
-		if err := c.conn.WriteMessage(messageType, data[i:end]); err != nil {
-			return err
-		}
-	}
-	return nil
+	return c.conn.WriteMessage(messageType, data)
 }
 
 // ReadMessage reads a message with proper locking
 func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	// Reset read deadline
-	c.conn.SetReadDeadline(time.Now().Add(ReadTimeout))
 	return c.conn.ReadMessage()
 }
 
