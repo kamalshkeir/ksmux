@@ -44,12 +44,8 @@ const (
 	continuationFrame = 0
 	noFrame           = -1
 
-	// Actor configuration
-	actorQueueSize = 1 << 18 // 262144 messages (increased from 65536)
-	actorBatchSize = 1000    // Increased from 500 for better throughput
-
 	// Constants for write handling
-	writeQueueSize = 65536 // Increased from 32768 for more buffering
+	writeQueueSize = 4096
 )
 
 // Close codes defined in RFC 6455, section 11.7.
@@ -193,9 +189,9 @@ var (
 	// Package level shared actors
 	sharedBackupActors []*ActorOP
 	sharedReadActors   []*ActorOP
-	numBackupActors    = runtime.NumCPU() * 4 // Increased from 2x to 4x CPU cores
-	numReadActors      = runtime.NumCPU() * 2 // Increased from 1x to 2x CPU cores
-	actorsInitOnce     sync.Once              // Ensure actors are initialized only once
+	numBackupActors    = 2
+	numReadActors      = 2
+	actorsInitOnce     sync.Once
 )
 
 func init() {
@@ -203,13 +199,13 @@ func init() {
 		// Initialize backup actors
 		sharedBackupActors = make([]*ActorOP, numBackupActors)
 		for i := 0; i < numBackupActors; i++ {
-			sharedBackupActors[i] = InitBackupActor()
+			sharedBackupActors[i] = InitBackupActors()
 		}
 
 		// Initialize read actors
 		sharedReadActors = make([]*ActorOP, numReadActors)
 		for i := 0; i < numReadActors; i++ {
-			sharedReadActors[i] = InitReadActor()
+			sharedReadActors[i] = InitReadActors()
 		}
 	})
 }
@@ -311,9 +307,9 @@ type Conn struct {
 	newDecompressionReader func(io.Reader) io.ReadCloser
 }
 
-// InitBackupActor initializes the shared backup actor at application startup
-func InitBackupActor() *ActorOP {
-	ac := NewActorOP(actorQueueSize, actorBatchSize, func(msgs []MessageOP) {
+// InitBackupActors initializes the shared backup actor at application startup
+func InitBackupActors() *ActorOP {
+	ac := NewActorOP(0, 0, func(msgs []MessageOP) {
 		for _, msg := range msgs {
 			if msg == nil {
 				continue
@@ -445,9 +441,9 @@ type readResult struct {
 	err         error
 }
 
-// InitReadActor initializes a read actor
-func InitReadActor() *ActorOP {
-	ac := NewActorOP(actorQueueSize, actorBatchSize, func(msgs []MessageOP) {
+// InitReadActors initializes a read actor
+func InitReadActors() *ActorOP {
+	ac := NewActorOP(0, 0, func(msgs []MessageOP) {
 		// Pre-allocate a buffer for each batch
 		buf := bufferPool.Get().([]byte)
 		defer bufferPool.Put(buf)
