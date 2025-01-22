@@ -275,6 +275,7 @@ type Conn struct {
 
 	// Write fields
 	writeErr      error
+	writeErrMu    sync.Mutex // Protects writeErr
 	writeBuf      []byte
 	bufferPool    BufferPool
 	writeBufSize  int
@@ -531,9 +532,13 @@ func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
 
 // WriteMessage writes a message with proper error handling and backpressure
 func (c *Conn) WriteMessage(messageType int, data []byte) error {
+	c.writeErrMu.Lock()
 	if c.writeErr != nil {
-		return c.writeErr
+		err := c.writeErr
+		c.writeErrMu.Unlock()
+		return err
 	}
+	c.writeErrMu.Unlock()
 
 	if c.writeQueue == nil {
 		return errors.New("websocket: connection not initialized properly")
@@ -548,7 +553,7 @@ func (c *Conn) WriteMessage(messageType int, data []byte) error {
 		return nil
 	}
 
-	// Create write request
+	// Create write request with buffered done channel
 	req := &writeRequest{
 		frames:   [][]byte{frame},
 		deadline: time.Now().Add(writeWait),
@@ -567,6 +572,9 @@ func (c *Conn) WriteMessage(messageType int, data []byte) error {
 	// Try each backup actor multiple times
 	for i := 0; i < 3; i++ { // Try each actor up to 3 times
 		for _, actor := range sharedBackupActors {
+			if actor == nil {
+				continue
+			}
 			if actor.Send(req, -1) {
 				goto wait
 			}
@@ -585,9 +593,12 @@ func (c *Conn) WriteMessage(messageType int, data []byte) error {
 	}
 
 wait:
-	// Wait for write to complete
+	// Wait for write to complete or timeout
 	select {
-	case err := <-req.done:
+	case err, ok := <-req.done:
+		if !ok {
+			return errors.New("websocket: connection closed during write")
+		}
 		return err
 	case <-time.After(writeWait):
 		return errWriteTimeout
@@ -831,9 +842,13 @@ func (c *Conn) beginMessage(mw *messageWriter, messageType int) error {
 		return errBadWriteOpCode
 	}
 
+	c.writeErrMu.Lock()
 	if c.writeErr != nil {
-		return c.writeErr
+		err := c.writeErr
+		c.writeErrMu.Unlock()
+		return err
 	}
+	c.writeErrMu.Unlock()
 
 	mw.c = c
 	mw.frameType = messageType
@@ -1396,9 +1411,11 @@ func (c *Conn) write(deadline time.Time, buf0, buf1 []byte) error {
 
 func (c *Conn) writeFatal(err error) error {
 	err = hideTempErr(err)
+	c.writeErrMu.Lock()
 	if c.writeErr == nil {
 		c.writeErr = err
 	}
+	c.writeErrMu.Unlock()
 	return err
 }
 
@@ -1480,7 +1497,9 @@ func (c *Conn) writeLoop() {
 		}
 
 		if err != nil {
+			c.writeErrMu.Lock()
 			c.writeErr = err
+			c.writeErrMu.Unlock()
 		}
 
 		// Signal completion to all waiting writers

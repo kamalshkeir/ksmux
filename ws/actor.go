@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type MessageOP interface{}
@@ -32,10 +33,10 @@ type ActorOP struct {
 
 func NewActorOP(queueSize, batchSize int, handler func(msgs []MessageOP)) *ActorOP {
 	if queueSize <= 0 {
-		queueSize = 1 << 21
+		queueSize = 1 << 16
 	}
 	if batchSize <= 0 {
-		batchSize = 8192
+		batchSize = 4096
 	}
 
 	queueSize = 1 << uint(32-bits.LeadingZeros32(uint32(queueSize-1)))
@@ -119,6 +120,7 @@ func (a *ActorOP) processBatch(workerID int) {
 	q := &a.queues[workerID]
 	batch := make([]MessageOP, a.batchSize)
 	localHead := atomic.LoadInt32(&q.head)
+	idleCount := 0
 
 	for {
 		select {
@@ -141,13 +143,24 @@ func (a *ActorOP) processBatch(workerID int) {
 		default:
 			tail := atomic.LoadInt32(&q.tail)
 			if localHead == tail {
-				// No messages, check done channel more frequently
-				runtime.Gosched()
+				// Exponential backoff when idle
+				idleCount++
+				if idleCount > 10 {
+					// After being idle for a while, sleep longer
+					time.Sleep(time.Millisecond)
+				} else if idleCount > 5 {
+					time.Sleep(100 * time.Microsecond)
+				} else {
+					runtime.Gosched()
+				}
 				continue
 			}
 
+			// Reset idle count when we have work
+			idleCount = 0
+
 			// Process all available messages in smaller batches
-			for {
+			for localHead != tail {
 				available := int((tail - localHead) & a.mask)
 				if available == 0 {
 					break
