@@ -494,23 +494,25 @@ func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
 }
 
 // Close performs a clean WebSocket close handshake
-func (c *Conn) Close() error {
+func (c *Conn) Close() {
 	if c.writeCh != nil {
 		close(c.writeCh)
 	}
 
 	// Send close frame with timeout
-	_ = c.conn.WriteControl(
-		ws.CloseMessage,
-		ws.FormatCloseMessage(ws.CloseNormalClosure, ""),
-		time.Now().Add(WriteTimeout),
-	)
+	if c.conn != nil {
+		_ = c.conn.WriteControl(
+			ws.CloseMessage,
+			ws.FormatCloseMessage(ws.CloseNormalClosure, ""),
+			time.Now().Add(WriteTimeout),
+		)
+		_ = c.conn.Close()
+	}
 
-	err := c.conn.Close()
 	if c.pool != nil {
 		c.pool.RemoveConnection(c)
 	}
-	return err
+	return
 }
 
 func DefaultPool() *Pool {

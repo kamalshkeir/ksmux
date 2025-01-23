@@ -274,14 +274,15 @@ type Conn struct {
 	subprotocol string
 
 	// Write fields
-	writeErr      error
-	writeErrMu    sync.Mutex // Protects writeErr
-	writeBuf      []byte
-	bufferPool    BufferPool
-	writeBufSize  int
-	writeDeadline time.Time
-	writeQueue    chan *writeRequest // Primary write queue
-	writeDone     chan struct{}      // Signals write loop completion
+	writeErr       error
+	writeErrMu     sync.Mutex // Protects writeErr
+	writeBuf       []byte
+	bufferPool     BufferPool
+	writeBufSize   int
+	writeDeadline  time.Time
+	writeQueue     chan *writeRequest // Primary write queue
+	writeQueueMu   sync.Mutex         // Protects writeQueue close operation
+	writeQueueDone bool               // Tracks if writeQueue is closed
 
 	// Read fields
 	readErr       error
@@ -358,15 +359,16 @@ func newConn(conn net.Conn, isServer bool, readBufferSize, writeBufferSize int, 
 	}
 
 	c := &Conn{
-		isServer:     isServer,
-		br:           br,
-		conn:         conn,
-		readFinal:    true,
-		writeBuf:     writeBuf,
-		bufferPool:   writeBufferPool,
-		writeBufSize: writeBufferSize,
-		writeQueue:   make(chan *writeRequest, writeQueueSize),
-		writeDone:    make(chan struct{}),
+		isServer:       isServer,
+		br:             br,
+		conn:           conn,
+		readFinal:      true,
+		writeBuf:       writeBuf,
+		bufferPool:     writeBufferPool,
+		writeBufSize:   writeBufferSize,
+		writeQueue:     make(chan *writeRequest, writeQueueSize),
+		writeQueueMu:   sync.Mutex{},
+		writeQueueDone: false,
 	}
 
 	// Start the write loop
@@ -622,8 +624,7 @@ func (c *Conn) WriteJSONBatch(messages []interface{}) error {
 // Close closes the connection and stops all writers
 func (c *Conn) Close() error {
 	if c.writeQueue != nil {
-		close(c.writeQueue)
-		<-c.writeDone // Wait for write loop to finish
+		c.closeWriteQueue()
 	}
 	if c.messageReader != nil {
 		c.messageReader.Close()
@@ -1444,8 +1445,6 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 
 // writeLoop handles all writes to the WebSocket connection
 func (c *Conn) writeLoop() {
-	defer close(c.writeDone)
-
 	// Pre-allocate buffers with larger capacity for better performance
 	frames := make([][]byte, 0, 2000) // Doubled capacity
 	doneChans := make([]chan error, 0, 2000)
@@ -1552,4 +1551,14 @@ func (c *Conn) writeLoop() {
 
 	// Final flush of any remaining frames
 	flushFrames()
+}
+
+// closeWriteQueue safely closes the writeQueue channel if not already closed
+func (c *Conn) closeWriteQueue() {
+	c.writeQueueMu.Lock()
+	defer c.writeQueueMu.Unlock()
+	if !c.writeQueueDone {
+		close(c.writeQueue)
+		c.writeQueueDone = true
+	}
 }
