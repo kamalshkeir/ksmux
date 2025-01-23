@@ -3,6 +3,7 @@ package ksmux
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -269,7 +270,7 @@ func (router *Router) Signal() chan os.Signal {
 	return router.sig
 }
 
-// Restart shuts down the current server, runs cleanup callbacks, and starts a new server instance
+// Restart shuts down the current server and lets supervisor start a new instance
 func (router *Router) Restart(cleanupCallbacks ...func() error) error {
 	// Run cleanup callbacks if any
 	for _, cleanup := range cleanupCallbacks {
@@ -278,34 +279,58 @@ func (router *Router) Restart(cleanupCallbacks ...func() error) error {
 		}
 	}
 
-	// Get current executable path
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable path: %v", err)
-	}
-
-	// Shutdown current server first
+	// Shutdown current server gracefully
 	router.Stop()
 
-	// Wait a moment for the server to fully stop
-	time.Sleep(1 * time.Second)
+	// Create a deadline for shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	// Start the new process using exec.Command
-	cmd := exec.Command(executable)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start new process: %v", err)
+	// Run any registered shutdown handlers
+	for _, sh := range router.Config.onShutdown {
+		if err := sh(); err != nil {
+			lg.Error("shutdown handler error:", "err", err)
+		}
 	}
 
-	// Exit current process
-	os.Exit(0)
+	// Attempt graceful shutdown
+	if err := router.Server.Shutdown(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		lg.Error("shutdown error:", "err", err)
+	}
+
+	// Exit with code 1 to signal restart to supervisor
+	os.Exit(1)
 	return nil
 }
 
 // Run HTTP server on address
 func (router *Router) Run() {
+	if os.Getenv("KSMUX_CHILD") == "1" {
+		router.runServer()
+		return
+	}
+
+	for {
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = append(os.Environ(), "KSMUX_CHILD=1")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+
+		err := cmd.Run()
+		if err != nil && err.Error() != "exit status 1" {
+			lg.Error("Server process error:", "err", err)
+		}
+
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
+			// Normal exit, break the loop
+			break
+		}
+	}
+}
+
+// runServer starts the HTTP server directly
+func (router *Router) runServer() {
 	router.initServer(router.Config.Address)
 
 	// Create a done channel to handle shutdown
@@ -315,7 +340,7 @@ func (router *Router) Run() {
 	go func() {
 		if err := router.Server.ListenAndServe(); err != http.ErrServerClosed {
 			lg.Error("Unable to shutdown the server", "err", err)
-			os.Exit(1)
+			os.Exit(0)
 		} else {
 			lg.Info("Server Off")
 		}
@@ -344,7 +369,7 @@ func (router *Router) Run() {
 	<-router.sig
 
 	// Create a deadline for shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Run any registered shutdown handlers
@@ -355,7 +380,7 @@ func (router *Router) Run() {
 	}
 
 	// Attempt graceful shutdown
-	if err := router.Server.Shutdown(ctx); err != nil {
+	if err := router.Server.Shutdown(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		lg.Error("shutdown error:", "err", err)
 	}
 
@@ -365,6 +390,31 @@ func (router *Router) Run() {
 
 // RunTLS HTTPS server using certificates
 func (router *Router) RunTLS() {
+	if os.Getenv("KSMUX_CHILD") == "1" {
+		router.runTLSServer()
+		return
+	}
+
+	for {
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = append(os.Environ(), "KSMUX_CHILD=1")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+
+		err := cmd.Run()
+		if err != nil && err.Error() != "exit status 1" {
+			lg.Error("Server process error:", "err", err)
+		}
+
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
+			break
+		}
+	}
+}
+
+// runTLSServer starts the HTTPS server directly
+func (router *Router) runTLSServer() {
 	router.initServer(router.Config.Address)
 	router.Server.TLSConfig.MinVersion = tls.VersionTLS12
 	router.Server.TLSConfig.NextProtos = append([]string{"h2", "http/1.1"}, router.Server.TLSConfig.NextProtos...)
@@ -376,7 +426,7 @@ func (router *Router) RunTLS() {
 		lg.Printfs("mgrunning on https://%s\n", router.Config.Address)
 		if err := router.Server.ListenAndServeTLS(router.Config.CertPath, router.Config.CertKeyPath); err != http.ErrServerClosed {
 			lg.Error("Unable to shutdown the server", "err", err)
-			os.Exit(1)
+			os.Exit(0)
 		} else {
 			lg.Info("Server Off")
 		}
@@ -403,7 +453,7 @@ func (router *Router) RunTLS() {
 	<-router.sig
 
 	// Create a deadline for shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Run any registered shutdown handlers
@@ -414,7 +464,7 @@ func (router *Router) RunTLS() {
 	}
 
 	// Attempt graceful shutdown
-	if err := router.Server.Shutdown(ctx); err != nil {
+	if err := router.Server.Shutdown(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		lg.Error("shutdown error:", "err", err)
 	}
 
@@ -424,6 +474,38 @@ func (router *Router) RunTLS() {
 
 // RunAutoTLS HTTPS server generate certificates and handle renew
 func (router *Router) RunAutoTLS() {
+	// If we're the server process, run the server directly
+	if os.Getenv("KSMUX_CHILD") == "1" {
+		router.runAutoTLSServer()
+		return
+	}
+
+	// We're the supervisor process
+	for {
+		// Start server as child process
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = append(os.Environ(), "KSMUX_CHILD=1")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+
+		// Run and wait
+		err := cmd.Run()
+		if err != nil && err.Error() != "exit status 1" {
+			lg.Error("Server process error:", "err", err)
+		}
+
+		// Check if it was a normal exit
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0 {
+			// Normal exit, break the loop
+			break
+		}
+		// Otherwise it was a restart request, continue loop
+	}
+}
+
+// runAutoTLSServer starts the HTTPS server with auto TLS directly
+func (router *Router) runAutoTLSServer() {
 	if router.proxies.Len() > 0 {
 		if len(router.Config.SubDomains) != router.proxies.Len() {
 			prs := router.proxies.Keys()
@@ -462,7 +544,7 @@ func (router *Router) RunAutoTLS() {
 		lg.Printfs("mgrunning on https://%s , subdomains: %v\n", router.Config.Domain, router.Config.SubDomains)
 		if err := router.Server.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
 			lg.Error("Unable to run the server", "err", err)
-			os.Exit(1)
+			os.Exit(0)
 		} else {
 			lg.Printfs("grServer Off !\n")
 		}
@@ -489,7 +571,7 @@ func (router *Router) RunAutoTLS() {
 	<-router.sig
 
 	// Create a deadline for shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Run any registered shutdown handlers
@@ -500,7 +582,7 @@ func (router *Router) RunAutoTLS() {
 	}
 
 	// Attempt graceful shutdown
-	if err := router.Server.Shutdown(ctx); err != nil {
+	if err := router.Server.Shutdown(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		lg.Error("shutdown error:", "err", err)
 	}
 
