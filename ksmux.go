@@ -21,6 +21,14 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
+func init() {
+	if IsSupervisor() {
+		app := New()
+		app.Run()
+		os.Exit(0)
+	}
+}
+
 var allrouters = kmap.New[string, *Router]()
 
 func UpgradeConnection(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*ws.Conn, error) {
@@ -1183,4 +1191,9 @@ func nodeToMap(n *node, path string, method string, routes map[string]*node) {
 	for _, child := range n.children {
 		nodeToMap(child, currentPath, method, routes)
 	}
+}
+
+// IsSupervisor returns true if current process is the supervisor
+func IsSupervisor() bool {
+	return os.Getenv("KSMUX_CHILD") != "1"
 }
