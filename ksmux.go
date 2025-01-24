@@ -21,11 +21,13 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
+var (
+	isSupervisor bool
+)
+
 func init() {
 	if IsSupervisor() {
-		app := New()
-		app.Run()
-		os.Exit(0)
+		isSupervisor = true
 	}
 }
 
@@ -130,6 +132,33 @@ type Config struct {
 // New returns a new initialized Router.
 // Path auto-correction, including trailing slashes, is enabled by default.
 func New(config ...Config) *Router {
+	if isSupervisor {
+		app := &Router{
+			RouterConfig: &RouterConfig{
+				ReadTimeout:            5 * time.Second,
+				WriteTimeout:           20 * time.Second,
+				IdleTimeout:            20 * time.Second,
+				RedirectTrailingSlash:  true,
+				RedirectFixedPath:      true,
+				HandleMethodNotAllowed: true,
+				HandleOPTIONS:          true,
+			},
+			Config: &Config{
+				Address:  "localhost:9313",
+				MediaDir: "media",
+				host:     "localhost",
+				port:     "9313",
+			},
+			state: &state{
+				generateGoComments: true,
+				docsPatterns:       []*Route{},
+			},
+		}
+		app.Run()
+		os.Exit(0)
+		return nil // This line will never be reached due to os.Exit(0)
+	}
+
 	router := &Router{
 		RouterConfig: &RouterConfig{
 			ReadTimeout:            5 * time.Second,
