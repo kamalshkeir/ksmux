@@ -106,16 +106,17 @@ type Router struct {
 }
 
 type Config struct {
-	Address     string
-	Domain      string
-	SubDomains  []string
-	CertPath    string
-	CertKeyPath string
-	MediaDir    string
-	isTls       bool
-	host        string
-	port        string
-	onShutdown  []func() error
+	Address      string
+	Domain       string
+	SubDomains   []string
+	CertPath     string
+	CertKeyPath  string
+	MediaDir     string
+	isTls        bool
+	RouterConfig *RouterConfig
+	host         string
+	port         string
+	onShutdown   []func() error
 }
 
 // New returns a new initialized Router.

@@ -186,28 +186,116 @@ var (
 	errBadWriteOpCode      = errors.New("websocket: bad write message type")
 	errWriteClosed         = errors.New("websocket: write closed")
 	errInvalidControlFrame = errors.New("websocket: invalid control frame")
-	// Package level shared actors
-	sharedBackupActors []*ActorOP
-	sharedReadActors   []*ActorOP
-	numBackupActors    = 2
-	numReadActors      = 2
-	actorsInitOnce     sync.Once
+
+	// Worker pools for read and write operations
+	writePool     *WorkerPool
+	readPool      *WorkerPool
+	poolsInitOnce sync.Once
+	poolsMutex    sync.RWMutex
+
+	// Buffer pool for read operations - increased size and preallocated
+	bufferPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 32*1024) // 32KB buffer - smaller but more efficient
+		},
+	}
 )
 
 func init() {
-	actorsInitOnce.Do(func() {
-		// Initialize backup actors
-		sharedBackupActors = make([]*ActorOP, numBackupActors)
-		for i := 0; i < numBackupActors; i++ {
-			sharedBackupActors[i] = InitBackupActors()
-		}
+	poolsInitOnce.Do(func() {
+		poolsMutex.Lock()
+		defer poolsMutex.Unlock()
 
-		// Initialize read actors
-		sharedReadActors = make([]*ActorOP, numReadActors)
-		for i := 0; i < numReadActors; i++ {
-			sharedReadActors[i] = InitReadActors()
-		}
+		// Initialize write pool with CPU cores workers and larger queue
+		writePool = NewWorkerPool(runtime.NumCPU(), 10000)
+
+		// Initialize read pool with CPU cores workers
+		readPool = NewWorkerPool(runtime.NumCPU(), 5000)
 	})
+}
+
+// CleanupPools stops all worker pools - should be called during application shutdown
+func CleanupPools() {
+	poolsMutex.Lock()
+	defer poolsMutex.Unlock()
+
+	if writePool != nil {
+		writePool.Shutdown()
+		writePool = nil
+	}
+
+	if readPool != nil {
+		readPool.Shutdown()
+		readPool = nil
+	}
+}
+
+// WriteMessage writes a message with proper error handling and backpressure
+func (c *Conn) WriteMessage(messageType int, data []byte) error {
+	return c.writeMessageWithPool(messageType, data)
+}
+
+// ReadMessage is a helper method for getting a reader using NextReader and
+// reading from that reader to a buffer.
+func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
+	return c.readMessageWithPool()
+}
+
+// BufferPool represents a pool of buffers. The *sync.Pool type satisfies this
+// interface.  The type of the value stored in a pool is not specified.
+type BufferPool interface {
+	// Get gets a value from the pool or returns nil if the pool is empty.
+	Get() interface{}
+	// Put adds a value to the pool.
+	Put(interface{})
+}
+
+// writePoolData is the type added to the write buffer pool. This wrapper is
+// used to prevent applications from peeking at and depending on the values
+// added to the pool.
+type writePoolData struct{ buf []byte }
+
+// The Conn type represents a WebSocket connection.
+type Conn struct {
+	conn        net.Conn
+	isServer    bool
+	subprotocol string
+
+	// Write fields
+	writeErr       error
+	writeErrMu     sync.Mutex // Protects writeErr
+	writeBuf       []byte
+	bufferPool     BufferPool
+	writeBufSize   int
+	writeDeadline  time.Time
+	writeQueue     chan *writeRequest // Primary write queue
+	writeQueueMu   sync.Mutex         // Protects writeQueue close operation
+	writeQueueDone bool               // Tracks if writeQueue is closed
+
+	// Read fields
+	readErr       error
+	br            *bufio.Reader
+	readRemaining int64
+	readFinal     bool
+	readLength    int64
+	readLimit     int64
+	readMaskPos   int
+	readMaskKey   [4]byte
+	readDeadline  time.Time // Added readDeadline field
+	handlePong    func(string) error
+	handlePing    func(string) error
+	handleClose   func(int, string) error
+	readErrCount  int
+
+	enableWriteCompression bool
+	compressionLevel       int
+	newCompressionWriter   func(io.WriteCloser, int) io.WriteCloser
+
+	reader        io.ReadCloser  // the current reader returned to the application
+	messageReader *messageReader // the current low-level reader
+
+	readDecompress         bool // whether last read frame had RSV1 set
+	newDecompressionReader func(io.Reader) io.ReadCloser
 }
 
 func newMaskKey() [4]byte {
@@ -251,84 +339,6 @@ var validReceivedCloseCodes = map[int]bool{
 
 func isValidReceivedCloseCode(code int) bool {
 	return validReceivedCloseCodes[code] || (code >= 3000 && code <= 4999)
-}
-
-// BufferPool represents a pool of buffers. The *sync.Pool type satisfies this
-// interface.  The type of the value stored in a pool is not specified.
-type BufferPool interface {
-	// Get gets a value from the pool or returns nil if the pool is empty.
-	Get() interface{}
-	// Put adds a value to the pool.
-	Put(interface{})
-}
-
-// writePoolData is the type added to the write buffer pool. This wrapper is
-// used to prevent applications from peeking at and depending on the values
-// added to the pool.
-type writePoolData struct{ buf []byte }
-
-// The Conn type represents a WebSocket connection.
-type Conn struct {
-	conn        net.Conn
-	isServer    bool
-	subprotocol string
-
-	// Write fields
-	writeErr       error
-	writeErrMu     sync.Mutex // Protects writeErr
-	writeBuf       []byte
-	bufferPool     BufferPool
-	writeBufSize   int
-	writeDeadline  time.Time
-	writeQueue     chan *writeRequest // Primary write queue
-	writeQueueMu   sync.Mutex         // Protects writeQueue close operation
-	writeQueueDone bool               // Tracks if writeQueue is closed
-
-	// Read fields
-	readErr       error
-	br            *bufio.Reader
-	readRemaining int64
-	readFinal     bool
-	readLength    int64
-	readLimit     int64
-	readMaskPos   int
-	readMaskKey   [4]byte
-	handlePong    func(string) error
-	handlePing    func(string) error
-	handleClose   func(int, string) error
-	readErrCount  int
-
-	enableWriteCompression bool
-	compressionLevel       int
-	newCompressionWriter   func(io.WriteCloser, int) io.WriteCloser
-
-	reader        io.ReadCloser  // the current reader returned to the application
-	messageReader *messageReader // the current low-level reader
-
-	readDecompress         bool // whether last read frame had RSV1 set
-	newDecompressionReader func(io.Reader) io.ReadCloser
-}
-
-// InitBackupActors initializes the shared backup actor at application startup
-func InitBackupActors() *ActorOP {
-	ac := NewActorOP(0, 0, func(msgs []MessageOP) {
-		for _, msg := range msgs {
-			if msg == nil {
-				continue
-			}
-			wmsg := msg.(*writeRequest)
-			for _, frame := range wmsg.frames {
-				_, err := wmsg.conn.Write(frame)
-				if err != nil {
-					wmsg.done <- err
-					return
-				}
-			}
-			wmsg.done <- nil
-		}
-	})
-	ac.Start()
-	return ac
 }
 
 // writeRequest represents a write operation
@@ -444,96 +454,8 @@ type readResult struct {
 	err         error
 }
 
-// InitReadActors initializes a read actor
-func InitReadActors() *ActorOP {
-	ac := NewActorOP(0, 0, func(msgs []MessageOP) {
-		// Pre-allocate a buffer for each batch
-		buf := bufferPool.Get().([]byte)
-		defer bufferPool.Put(buf)
-
-		for _, msg := range msgs {
-			if msg == nil {
-				continue
-			}
-			req := msg.(*readRequest)
-			messageType, r, err := req.conn.NextReader()
-			if err != nil {
-				req.done <- readResult{messageType: messageType, err: err}
-				continue
-			}
-
-			// Grow buffer if needed
-			data, err := io.ReadAll(r)
-			if err != nil {
-				req.done <- readResult{messageType: messageType, err: err}
-				continue
-			}
-
-			// Copy data to avoid race conditions
-			dataCopy := make([]byte, len(data))
-			copy(dataCopy, data)
-
-			select {
-			case req.done <- readResult{
-				messageType: messageType,
-				data:        dataCopy,
-				err:         err,
-			}:
-			default:
-				// If we can't send the result immediately, keep trying
-				go func(result readResult) {
-					req.done <- result
-				}(readResult{messageType: messageType, data: dataCopy, err: err})
-			}
-		}
-	})
-	ac.Start()
-	return ac
-}
-
-// Buffer pool for read operations - increased size and preallocated
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, 32*1024) // 32KB buffer - smaller but more efficient
-	},
-}
-
-// ReadMessage is a helper method for getting a reader using NextReader and
-// reading from that reader to a buffer.
-func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
-	// Fast path - direct read
-	var r io.Reader
-	messageType, r, err = c.NextReader()
-	if err != nil {
-		return messageType, nil, err
-	}
-
-	// Get buffer from pool
-	buf := bufferPool.Get().([]byte)
-
-	// Read into buffer
-	n, err := r.Read(buf)
-	if err == nil || err == io.EOF {
-		// Most messages will fit in the buffer
-		p = buf[:n]
-		return messageType, p, nil
-	}
-
-	// Message is larger than buffer, need to grow
-	if err == io.ErrShortBuffer {
-		// Return buffer to pool before allocating larger one
-		bufferPool.Put(buf)
-		p, err = io.ReadAll(r)
-		return messageType, p, err
-	}
-
-	// Return buffer and propagate error
-	bufferPool.Put(buf)
-	return messageType, nil, err
-}
-
 // WriteMessage writes a message with proper error handling and backpressure
-func (c *Conn) WriteMessage(messageType int, data []byte) error {
+func (c *Conn) writeMessageWithPool(messageType int, data []byte) error {
 	c.writeErrMu.Lock()
 	if c.writeErr != nil {
 		err := c.writeErr
@@ -541,10 +463,6 @@ func (c *Conn) WriteMessage(messageType int, data []byte) error {
 		return err
 	}
 	c.writeErrMu.Unlock()
-
-	if c.writeQueue == nil {
-		return errors.New("websocket: connection not initialized properly")
-	}
 
 	// Prepare frame
 	frame := c.prepareFrame(messageType, data)
@@ -556,54 +474,65 @@ func (c *Conn) WriteMessage(messageType int, data []byte) error {
 	}
 
 	// Create write request with buffered done channel
-	req := &writeRequest{
-		frames:   [][]byte{frame},
-		deadline: time.Now().Add(writeWait),
-		done:     make(chan error, 1),
-		conn:     c.conn,
+	done := make(chan error, 1)
+	task := NewWriteTask([][]byte{frame}, time.Now().Add(writeWait), done, c.conn)
+
+	// Try submitting to worker pool
+	if !writePool.Submit(task) {
+		return errWriteTimeout
 	}
 
-	// Try primary queue with very short timeout
-	select {
-	case c.writeQueue <- req:
-		goto wait
-	case <-time.After(time.Microsecond):
-		// Queue full, continue to backup actors
-	}
-
-	// Try each backup actor multiple times
-	for i := 0; i < 3; i++ { // Try each actor up to 3 times
-		for _, actor := range sharedBackupActors {
-			if actor == nil {
-				continue
-			}
-			if actor.Send(req, -1) {
-				goto wait
-			}
-			runtime.Gosched() // Give other goroutines a chance between attempts
-		}
-	}
-
-	// If we get here, all attempts failed
-	// Try primary queue one more time with longer timeout
-	select {
-	case c.writeQueue <- req:
-		goto wait
-	case <-time.After(time.Millisecond):
-		// Still failed, yield and retry everything
-		runtime.Gosched()
-	}
-
-wait:
 	// Wait for write to complete or timeout
 	select {
-	case err, ok := <-req.done:
-		if !ok {
-			return errors.New("websocket: connection closed during write")
-		}
+	case err := <-done:
 		return err
 	case <-time.After(writeWait):
 		return errWriteTimeout
+	}
+}
+
+// ReadMessage reads a message using the worker pool
+func (c *Conn) readMessageWithPool() (messageType int, p []byte, err error) {
+	// Fast path - direct read
+	var r io.Reader
+	messageType, r, err = c.NextReader()
+	if err != nil {
+		return messageType, nil, err
+	}
+
+	// Get buffer from pool
+	buf := bufferPool.Get().([]byte)
+	defer bufferPool.Put(buf)
+
+	// Try direct read first
+	n, err := r.Read(buf)
+	if err == nil || err == io.EOF {
+		// Most messages will fit in the buffer
+		p = make([]byte, n)
+		copy(p, buf[:n])
+		return messageType, p, nil
+	}
+
+	// Message is larger or there was an error, use worker pool
+	done := make(chan readResult, 1)
+	task := NewReadTask(c, done)
+
+	// Try submitting to worker pool
+	if !readPool.Submit(task) {
+		return 0, nil, errors.New("read pool full")
+	}
+
+	// Wait for result with timeout
+	deadline := time.Now().Add(5 * time.Second) // Default 5 second timeout
+	if !c.readDeadline.IsZero() {
+		deadline = c.readDeadline
+	}
+
+	select {
+	case result := <-done:
+		return result.messageType, result.data, result.err
+	case <-time.After(time.Until(deadline)):
+		return 0, nil, errors.New("read timeout")
 	}
 }
 
@@ -635,21 +564,7 @@ func (c *Conn) Close() error {
 
 // CleanupActors stops all shared actors - should be called during application shutdown
 func CleanupActors() {
-	// Stop backup actors
-	for _, actor := range sharedBackupActors {
-		if actor != nil {
-			actor.Stop()
-		}
-	}
-	sharedBackupActors = nil
-
-	// Stop read actors
-	for _, actor := range sharedReadActors {
-		if actor != nil {
-			actor.Stop()
-		}
-	}
-	sharedReadActors = nil
+	CleanupPools()
 }
 
 // Subprotocol returns the negotiated protocol for the connection.
@@ -1382,6 +1297,7 @@ func (r *messageReader) Close() error {
 // all future reads will return an error. A zero value for t means reads will
 // not time out.
 func (c *Conn) SetReadDeadline(t time.Time) error {
+	c.readDeadline = t
 	return c.conn.SetReadDeadline(t)
 }
 
