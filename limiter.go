@@ -22,15 +22,13 @@ const (
 )
 
 type limiterClient struct {
-	limiter   *rate.Limiter
-	lastSeen  time.Time
-	totalHits int64
+	limiter  *rate.Limiter
+	lastSeen time.Time
 }
 
 var (
 	limited          = kmap.New[string, *limiterClient]()
 	limiterQuit      chan struct{}
-	limiterUsed      = false
 	defCheckEvery    = 5 * time.Minute
 	defBlockDuration = 10 * time.Minute
 	defRateEvery     = 10 * time.Minute
@@ -140,7 +138,6 @@ func Limiter(conf *ConfigLimiter) func(http.Handler) http.Handler {
 			}
 		}
 	}()
-	limiterUsed = true
 
 	return func(handler http.Handler) http.Handler {
 		return Handler(func(c *Context) {

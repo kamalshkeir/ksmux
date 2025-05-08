@@ -31,29 +31,6 @@ func UpgradeConnection(w http.ResponseWriter, r *http.Request, responseHeader ht
 // wildcards (path variables).
 type Handler func(c *Context)
 
-type GroupRouter struct {
-	*Router
-	Group string
-	midws []func(Handler) Handler
-}
-
-// Use chain handler middlewares
-func (gr *GroupRouter) Use(middlewares ...func(Handler) Handler) {
-	gr.midws = append(gr.midws, middlewares...)
-}
-
-// Group create group path
-func (router *Router) Group(prefix string) *GroupRouter {
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	prefix = strings.TrimSuffix(prefix, "/")
-	return &GroupRouter{
-		Router: router,
-		Group:  prefix,
-	}
-}
-
 // Use chain global router middlewares
 func (router *Router) Use(midws ...func(http.Handler) http.Handler) {
 	if len(router.middlewares) == 0 {
@@ -217,7 +194,11 @@ func New(config ...Config) *Router {
 	} else if router.Config.Domain != "" {
 		allrouters.Set(router.Config.Domain, router)
 	}
+	router.proxies = kmap.New[string, http.Handler]()
 	router.sig = make(chan os.Signal, 1)
+	if firstRouter == nil {
+		firstRouter = router
+	}
 	return router
 }
 
@@ -243,6 +224,7 @@ func GetFirstRouter() *Router {
 func (router *Router) IsTls() bool {
 	return router.Config.isTls
 }
+
 func (router *Router) Address() string {
 	return router.Config.Address
 }
@@ -482,50 +464,12 @@ func (r *Router) Get(path string, handler Handler, origines ...string) *Route {
 	return r.Handle(http.MethodGet, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Get(pattern string, handler Handler, origines ...string) *Route {
-	if !strings.HasPrefix(pattern, "/") {
-		pattern = "/" + pattern
-	}
-	var h Handler
-	if len(gr.midws) > 0 {
-		for i := range gr.midws {
-			if i == 0 {
-				h = gr.midws[0](handler)
-			} else {
-				h = gr.midws[i](h)
-			}
-		}
-	} else {
-		h = handler
-	}
-	return gr.Router.Handle(http.MethodGet, gr.Group+pattern, handler, origines...)
-}
-
 // Head is a shortcut for router.Handle(http.MethodHead, path, handler)
 func (r *Router) Head(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
 	return r.Handle(http.MethodHead, path, handler, origines...)
-}
-
-func (gr *GroupRouter) Head(pattern string, handler Handler, origines ...string) *Route {
-	if !strings.HasPrefix(pattern, "/") {
-		pattern = "/" + pattern
-	}
-	var h Handler
-	if len(gr.midws) > 0 {
-		for i := range gr.midws {
-			if i == 0 {
-				h = gr.midws[0](handler)
-			} else {
-				h = gr.midws[i](h)
-			}
-		}
-	} else {
-		h = handler
-	}
-	return gr.Router.Handle(http.MethodHead, gr.Group+pattern, handler, origines...)
 }
 
 // Options is a shortcut for router.Handle(http.MethodOptions, path, handler)
@@ -536,50 +480,12 @@ func (r *Router) Options(path string, handler Handler, origines ...string) *Rout
 	return r.Handle(http.MethodOptions, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Options(pattern string, handler Handler, origines ...string) *Route {
-	if !strings.HasPrefix(pattern, "/") {
-		pattern = "/" + pattern
-	}
-	var h Handler
-	if len(gr.midws) > 0 {
-		for i := range gr.midws {
-			if i == 0 {
-				h = gr.midws[0](handler)
-			} else {
-				h = gr.midws[i](h)
-			}
-		}
-	} else {
-		h = handler
-	}
-	return gr.Router.Handle(http.MethodOptions, gr.Group+pattern, handler, origines...)
-}
-
 // Post is a shortcut for router.Handle(http.MethodPost, path, handler)
 func (r *Router) Post(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
 	return r.Handle(http.MethodPost, path, handler, origines...)
-}
-
-func (gr *GroupRouter) Post(pattern string, handler Handler, origines ...string) *Route {
-	if !strings.HasPrefix(pattern, "/") {
-		pattern = "/" + pattern
-	}
-	var h Handler
-	if len(gr.midws) > 0 {
-		for i := range gr.midws {
-			if i == 0 {
-				h = gr.midws[0](handler)
-			} else {
-				h = gr.midws[i](h)
-			}
-		}
-	} else {
-		h = handler
-	}
-	return gr.Router.Handle(http.MethodPost, gr.Group+pattern, handler, origines...)
 }
 
 // Put is a shortcut for router.Handle(http.MethodPut, path, handler)
@@ -590,25 +496,6 @@ func (r *Router) Put(path string, handler Handler, origines ...string) *Route {
 	return r.Handle(http.MethodPut, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Put(pattern string, handler Handler, origines ...string) *Route {
-	if !strings.HasPrefix(pattern, "/") {
-		pattern = "/" + pattern
-	}
-	var h Handler
-	if len(gr.midws) > 0 {
-		for i := range gr.midws {
-			if i == 0 {
-				h = gr.midws[0](handler)
-			} else {
-				h = gr.midws[i](h)
-			}
-		}
-	} else {
-		h = handler
-	}
-	return gr.Router.Handle(http.MethodPut, gr.Group+pattern, handler, origines...)
-}
-
 // Patch is a shortcut for router.Handle(http.MethodPatch, path, handler)
 func (r *Router) Patch(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
@@ -617,50 +504,12 @@ func (r *Router) Patch(path string, handler Handler, origines ...string) *Route 
 	return r.Handle(http.MethodPatch, path, handler, origines...)
 }
 
-func (gr *GroupRouter) Patch(pattern string, handler Handler, origines ...string) *Route {
-	if !strings.HasPrefix(pattern, "/") {
-		pattern = "/" + pattern
-	}
-	var h Handler
-	if len(gr.midws) > 0 {
-		for i := range gr.midws {
-			if i == 0 {
-				h = gr.midws[0](handler)
-			} else {
-				h = gr.midws[i](h)
-			}
-		}
-	} else {
-		h = handler
-	}
-	return gr.Router.Handle(http.MethodPatch, gr.Group+pattern, handler, origines...)
-}
-
 // Delete is a shortcut for router.Handle(http.MethodDelete, path, handler)
 func (r *Router) Delete(path string, handler Handler, origines ...string) *Route {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
 	return r.Handle(http.MethodDelete, path, handler, origines...)
-}
-
-func (gr *GroupRouter) Delete(pattern string, handler Handler, origines ...string) *Route {
-	if !strings.HasPrefix(pattern, "/") {
-		pattern = "/" + pattern
-	}
-	var h Handler
-	if len(gr.midws) > 0 {
-		for i := range gr.midws {
-			if i == 0 {
-				h = gr.midws[0](handler)
-			} else {
-				h = gr.midws[i](h)
-			}
-		}
-	} else {
-		h = handler
-	}
-	return gr.Router.Handle(http.MethodDelete, gr.Group+pattern, handler, origines...)
 }
 
 // Handle registers a new request handler with the given path and method.

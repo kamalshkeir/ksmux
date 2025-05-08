@@ -130,7 +130,7 @@ func TestLoadBalancerIntegration(t *testing.T) {
 
 	// Create test request
 	req := httptest.NewRequest("GET", "/test/hello", nil)
-	w := httptest.NewRecorder()
+	var w *httptest.ResponseRecorder
 
 	// Make multiple requests to test round robin
 	responses := make(map[string]int)

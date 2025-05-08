@@ -376,38 +376,38 @@ func (r *Router) allowed(path, reqMethod string) (allow string) {
 }
 
 // Graceful Shutdown
-func (router *Router) gracefulShutdown() {
-	err := Graceful(func() error {
-		if router.Server != nil {
-			// Run any registered shutdown handlers first
-			for _, sh := range router.Config.onShutdown {
-				if err := sh(); err != nil {
-					lg.Error("on shutdown handler error:", "err", err)
-				}
-			}
+// func (router *Router) gracefulShutdown() {
+// 	err := Graceful(func() error {
+// 		if router.Server != nil {
+// 			// Run any registered shutdown handlers first
+// 			for _, sh := range router.Config.onShutdown {
+// 				if err := sh(); err != nil {
+// 					lg.Error("on shutdown handler error:", "err", err)
+// 				}
+// 			}
 
-			// Create a deadline for shutdown
-			timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
+// 			// Create a deadline for shutdown
+// 			timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+// 			defer cancel()
 
-			// Attempt graceful shutdown
-			if err := router.Server.Shutdown(timeout); err != nil {
-				// Log but don't treat as fatal error
-				lg.Error("shutdown error:", "err", err)
-			}
-		}
+// 			// Attempt graceful shutdown
+// 			if err := router.Server.Shutdown(timeout); err != nil {
+// 				// Log but don't treat as fatal error
+// 				lg.Error("shutdown error:", "err", err)
+// 			}
+// 		}
 
-		if limiterUsed {
-			close(limiterQuit)
-		}
-		return nil
-	})
+// 		if limiterUsed {
+// 			close(limiterQuit)
+// 		}
+// 		return nil
+// 	})
 
-	// Only exit with error if it's not a shutdown error
-	if err != nil && err != http.ErrServerClosed {
-		os.Exit(1)
-	}
-}
+// 	// Only exit with error if it's not a shutdown error
+// 	if err != nil && err != http.ErrServerClosed {
+// 		os.Exit(1)
+// 	}
+// }
 
 func (router *Router) OnShutdown(fn func() error) {
 	router.Config.onShutdown = append(router.Config.onShutdown, fn)
