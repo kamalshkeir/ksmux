@@ -406,19 +406,6 @@ func (c *Context) GetKey(key string) (any, bool) {
 	}
 }
 
-// GetKeyAs return request context value for given key
-func (c *Context) GetKeyAs(key string, ptrStruct any) bool {
-	v := c.Request.Context().Value(ContextKey(key))
-	if v != nil {
-		if err := kstrct.TrySet(ptrStruct, v); err != nil {
-			return false
-		}
-		return true
-	} else {
-		return false
-	}
-}
-
 func (c *Context) SetKey(key string, value any) {
 	ctx := context.WithValue(c.Request.Context(), ContextKey(key), value)
 	c.Request = c.Request.WithContext(ctx)
