@@ -18,8 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"encoding/json"
-
+	"github.com/kamalshkeir/ksmux/jsonencdec"
 	"github.com/kamalshkeir/lg"
 )
 
@@ -539,7 +538,7 @@ func (c *Conn) readMessageWithPool() (messageType int, p []byte, err error) {
 // WriteJSONBatch writes multiple JSON messages in a single batch operation
 func (c *Conn) WriteJSONBatch(messages []interface{}) error {
 	for _, v := range messages {
-		data, err := json.Marshal(v)
+		data, err := jsonencdec.DefaultMarshal(v)
 		if err != nil {
 			return err
 		}
@@ -699,11 +698,6 @@ func FormatCloseMessage(closeCode int, text string) []byte {
 	binary.BigEndian.PutUint16(buf, uint16(closeCode))
 	copy(buf[2:], text)
 	return buf
-}
-
-// jsonMarshal is a helper function to marshal JSON using the connection's configured marshaler
-func (c *Conn) jsonMarshal(v interface{}) ([]byte, error) {
-	return json.Marshal(v)
 }
 
 // WriteControl writes a control message with the given deadline. The allowed

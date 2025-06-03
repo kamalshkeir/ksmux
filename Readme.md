@@ -27,6 +27,32 @@ To install KSMUX, use the following command:
 go get github.com/kamalshkeir/ksmux@latest
 ```
 
+## Basic Usage
+
+Here's a simple example to get started with KSMUX:
+
+```go
+package main
+
+import "github.com/kamalshkeir/ksmux"
+
+func main() {
+    // Create a new router
+    router := ksmux.New(ksmux.Confif{
+        Address:"localhost:9313",
+    })
+
+    // Define a route
+    router.Get("/", func(c *ksmux.Context) {
+        c.Text("Hello World!")
+    })
+
+    // Start the server
+    router.Run()
+}
+```
+
+
 ## Tracing
 
 KSMUX includes built-in distributed tracing capabilities that can export to OpenTelemetry-compatible backends:
@@ -105,28 +131,7 @@ ksmux.SetMaxTraces(500) // Keep only the last 500 traces
 
 When the limit is reached, the oldest trace will be removed when a new one is added.
 
-## Basic Usage
 
-Here's a simple example to get started with KSMUX:
-
-```go
-package main
-
-import "github.com/kamalshkeir/ksmux"
-
-func main() {
-    // Create a new router
-    router := ksmux.New()
-
-    // Define a route
-    router.Get("/", func(c *ksmux.Context) {
-        c.Text("Hello World!")
-    })
-
-    // Start the server
-    router.Run(":8080")
-}
-```
 
 ## Routing
 
