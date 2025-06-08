@@ -232,6 +232,8 @@ func NewSmtpServer(conf *ConfServer) (*SmtpServer, error) {
 		Domain:              conf.Domain,
 		Subdomain:           conf.Subdomain,
 		Address:             conf.Address,
+		IPv4:                conf.IPv4,
+		IPv6:                conf.IPv6,
 		done:                make(chan struct{}),
 		users:               users,
 		requireAuthForRelay: conf.RequireAuthForExternal,
@@ -242,6 +244,10 @@ func NewSmtpServer(conf *ConfServer) (*SmtpServer, error) {
 	}
 
 	return srv, nil
+}
+
+func (ss *SmtpServer) GetTLSConfig() *tls.Config {
+	return ss.tlsConfig
 }
 
 func (ss *SmtpServer) Start() {
@@ -300,44 +306,10 @@ func (ss *SmtpServer) PrintDNSConfiguration() {
 	fmt.Println("🚀 KSMTP - DNS Configuration Helper 🚀")
 	fmt.Println(strings.Repeat("-", 80))
 	fmt.Println("Voici la configuration DNS requise pour que votre serveur mail fonctionne.")
-	fmt.Println("Copiez-collez ces valeurs dans votre panneau de contrôle Linode (DNS Manager):")
+	fmt.Println("Copiez-collez ces valeurs dans votre panneau de contrôle (DNS Manager):")
 	fmt.Println(strings.Repeat("-", 80))
 	fmt.Println()
 
-	if ss.listener == nil {
-		fmt.Println("✅ 1. SPF Record (Autorisation d'envoi)")
-		fmt.Printf("   - Hostname:  @ (ou laisser vide)\n")
-		fmt.Printf("   - Value:     \"v=spf1 ip4:%s ip6:%s ~all\"\n", ss.IPv4, ss.IPv6)
-		fmt.Println()
-		dkimPrivateKey, err := loadDKIMPrivateKey()
-		if err != nil {
-			fmt.Printf("❌ ERREUR DKIM: %v\n", err)
-		} else {
-			publicKey, err := getDKIMPublicKey(dkimPrivateKey)
-			if err != nil {
-				fmt.Println("❌ ERREUR DKIM:", err)
-			} else {
-				fmt.Println("✅ 2. DKIM Record (Signature anti-spam)")
-				fmt.Printf("   - Hostname:  %s._domainkey\n", dkimSelector)
-				fmt.Printf("   - Value:     \"v=DKIM1; k=rsa; p=%s\"\n", publicKey)
-				fmt.Println()
-			}
-		}
-
-		fmt.Println("✅ 3. DMARC Record (Politique de sécurité)")
-		fmt.Printf("   - Hostname:  _dmarc\n")
-		fmt.Printf("   - Value:     \"v=DMARC1; p=quarantine; rua=mailto:dmarc@%s\"\n", ss.Domain)
-		fmt.Println(strings.Repeat("-", 80))
-		fmt.Println()
-		fmt.Println("🔥 ACTION REQUISE - REVERSE DNS (PTR) 🔥")
-		fmt.Println("C'est l'étape la plus importante pour l'envoi en IPv6. Cela se fait dans")
-		fmt.Println("la section 'Networking' de votre Linode, PAS dans le 'DNS Manager'.")
-		fmt.Println("1. Allez dans l'onglet 'Networking' de votre Linode.")
-		fmt.Println("2. Trouvez votre adresse IPv6 et cliquez sur 'Edit RDNS'.")
-		fmt.Println("3. Entrez '" + ss.Domain + "' comme Reverse DNS et sauvegardez.")
-		fmt.Println(strings.Repeat("-", 80))
-		return
-	}
 	sub := strings.TrimSuffix(ss.Subdomain, ".")
 	// A Record
 	fmt.Println("✅ 1.1. A Record (Adresse IPv4)")
@@ -352,15 +324,9 @@ func (ss *SmtpServer) PrintDNSConfiguration() {
 	fmt.Printf("   - IP Address: %s\n", ss.IPv6)
 	fmt.Println()
 
-	fmt.Println("✅ 2. MX Record (Pour recevoir les emails)")
-	fmt.Printf("   - Hostname:  @ (ou laisser vide)\n")
-	fmt.Printf("   - Points to DOMAIN: %s\n", ss.Subdomain)
-	fmt.Printf("   - LEAVE SUBDOMAIN EMPTY\n")
-	fmt.Printf("   - Priority:  10\n")
-	fmt.Println()
-
-	fmt.Println("✅ 3. SPF Record (Autorisation d'envoi)")
-	fmt.Printf("   - Hostname:  @ (ou laisser vide)\n")
+	fmt.Println("✅ 2. SPF Record (Autorisation d'envoi)")
+	fmt.Printf("   - Type:      TXT\n")
+	fmt.Printf("   - Hostname:  %s\n", ss.Domain)
 	fmt.Printf("   - Value:     \"v=spf1 ip4:%s ip6:%s ~all\"\n", ss.IPv4, ss.IPv6)
 	fmt.Println()
 
@@ -372,22 +338,31 @@ func (ss *SmtpServer) PrintDNSConfiguration() {
 		if err != nil {
 			fmt.Println("❌ ERREUR DKIM:", err)
 		} else {
-			fmt.Println("✅ 4. DKIM Record (Signature anti-spam)")
+			fmt.Println("✅ 3. DKIM Record (Signature anti-spam)")
+			fmt.Printf("   - Type:      TXT\n")
 			fmt.Printf("   - Hostname:  %s._domainkey\n", dkimSelector)
 			fmt.Printf("   - Value:     \"v=DKIM1; k=rsa; p=%s\"\n", publicKey)
 			fmt.Println()
 		}
 	}
 
-	fmt.Println("✅ 5. DMARC Record (Politique de sécurité)")
+	fmt.Println("✅ 4. DMARC Record (Politique de sécurité)")
+	fmt.Printf("   - Type:      TXT\n")
 	fmt.Printf("   - Hostname:  _dmarc\n")
 	fmt.Printf("   - Value:     \"v=DMARC1; p=quarantine; rua=mailto:dmarc@%s\"\n", ss.Domain)
 	fmt.Println(strings.Repeat("-", 80))
 	fmt.Println()
+	if ss.listener != nil {
+		fmt.Println("✅ 5. MX Record (Pour recevoir les emails)")
+		fmt.Printf("   - Type:      MX\n")
+		fmt.Printf("   - Mail Server: %s\n", ss.Subdomain)
+		fmt.Printf("   - LEAVE SUBDOMAIN EMPTY\n")
+		fmt.Printf("   - Priority:  10\n")
+		fmt.Println()
+	}
+
 	fmt.Println("🔥 ACTION REQUISE - REVERSE DNS (PTR) 🔥")
-	fmt.Println("C'est l'étape la plus importante pour l'envoi en IPv6. Cela se fait dans")
-	fmt.Println("la section 'Networking' de votre Linode, PAS dans le 'DNS Manager'.")
-	fmt.Println("1. Allez dans l'onglet 'Networking' de votre Linode.")
+	fmt.Println("1. Allez dans l'onglet 'Networking' de votre Hebergeur.")
 	fmt.Println("2. Trouvez votre adresse IPv6 et cliquez sur 'Edit RDNS'.")
 	fmt.Println("3. Entrez '" + ss.Subdomain + "' comme Reverse DNS et sauvegardez.")
 	fmt.Println(strings.Repeat("-", 80))
