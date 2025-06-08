@@ -241,12 +241,9 @@ func (n *node) getHandler(path string, params func() *Params) (handler Handler, 
 	paramPos := 0
 	pathBytes := []byte(path) // Avoid repeated string indexing
 
-	for i := 0; i < pathLen; i++ {
-		if pathBytes[i] == '/' || i == pathLen-1 {
+	for i := 0; i <= pathLen; i++ {
+		if i == pathLen || pathBytes[i] == '/' {
 			end := i
-			if i == pathLen-1 {
-				end = pathLen
-			}
 			segment := path[start:end] // Direct slice, no buffer needed
 
 			// Try static nodes first
@@ -282,7 +279,7 @@ func (n *node) getHandler(path string, params func() *Params) (handler Handler, 
 				}
 			}
 
-			// Try catchAll
+			// Try catchAll - allow empty segments for wildcards
 			if next == nil {
 				for _, child := range current.children {
 					if child.nType == catchAll {
