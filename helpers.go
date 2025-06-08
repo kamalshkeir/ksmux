@@ -68,13 +68,15 @@ func (router *Router) CreateServerCerts(domainName string, subDomains ...string)
 				// Certificate exists, parse it into a *tls.Certificate
 				cert, err := tls.X509KeyPair(certData, nil)
 				if err == nil {
+					// lg.Printfs("Found cached certificate for %s, calling saveCertificateAndKey\n", hello.ServerName)
+					saveCertificateAndKey(&cert) // Save .pem files for cached certs too
 					return &cert, nil
 				}
 			}
 
 			// Certificate does not exist, request a new one
 			cert, err := m.GetCertificate(hello)
-			if lg.CheckError(err) {
+			if err != nil {
 				return nil, err
 			}
 			saveCertificateAndKey(cert)
@@ -159,7 +161,17 @@ func SetSSLEmail(email string) {
 
 func saveCertificateAndKey(cert *tls.Certificate) {
 	if cert.Leaf == nil {
-		return
+		// Parse the certificate to populate Leaf
+		if len(cert.Certificate) > 0 {
+			parsed, err := x509.ParseCertificate(cert.Certificate[0])
+			if err != nil {
+				lg.ErrorC("Failed to parse certificate", "err", err)
+				return
+			}
+			cert.Leaf = parsed
+		} else {
+			return
+		}
 	}
 	domain := cert.Leaf.Subject.CommonName
 
@@ -213,22 +225,20 @@ func saveCertificateAndKey(cert *tls.Certificate) {
 
 		err := os.WriteFile(keyFile, keyPEM, 0600)
 		if lg.CheckError(err) {
-			lg.Printfs("Failed to save private key: %v\n", err)
+			lg.ErrorC("Failed to save private key", "err", err)
 			return
 		}
-		lg.Printfs("Certificate %s and private key %s files for %s saved successfully.\n", certFile, keyFile, domain)
 	}
 }
 
 func isCertificateValid(certFile string, monthN int) bool {
 	info, err := os.Stat(certFile)
 	if err != nil {
-		lg.Printfs("Failed to get certificate file info: %v\n", err)
 		return false
 	}
-	// Check if the certificate file is older than 2 months
-	twoMonthsAgo := time.Now().AddDate(0, -monthN, 0)
-	return info.ModTime().After(twoMonthsAgo)
+	// Check if the certificate file is older than specified months
+	monthsAgo := time.Now().AddDate(0, -monthN, 0)
+	return info.ModTime().After(monthsAgo)
 }
 
 // Param is a single URL parameter, consisting of a key and a value.

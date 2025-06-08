@@ -390,6 +390,7 @@ func (router *Router) RunAutoTLS() {
 		}
 	}
 
+	var tlsConfig *tls.Config
 	if router.AutoCertManager == nil {
 		certManager, tlsconf := router.CreateServerCerts(router.Config.Domain, router.Config.SubDomains...)
 		if certManager == nil || tlsconf == nil {
@@ -397,8 +398,11 @@ func (router *Router) RunAutoTLS() {
 			return
 		}
 		router.AutoCertManager = certManager
+		tlsConfig = tlsconf
+	} else {
+		tlsConfig = router.AutoCertManager.TLSConfig()
 	}
-	router.initAutoServer(router.AutoCertManager.TLSConfig())
+	router.initAutoServer(tlsConfig)
 
 	// Create a done channel to handle shutdown
 	serverDone := make(chan struct{})
