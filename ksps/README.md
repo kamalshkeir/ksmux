@@ -56,7 +56,9 @@ response, ok := ack.WaitAny()
 ```javascript
 // Browser or Node.js
 const client = await BusClient.Client.NewClient({
-    Address: "localhost:9313"
+    Address: "localhost:9313", // default: window.location.host
+    Path: "/ws/newPath", // default: /ws/bus
+    Secure: false //  protocol == 'http:' -> false
 });
 
 // Subscribe

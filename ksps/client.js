@@ -181,7 +181,9 @@ class ClientAck {
 class Client {
     constructor() {
         this.Id = '';
-        this.ServerAddr = '';
+        this.Address = '';
+        this.Path = '';
+        this.Secure = '';
         this.onDataWS = null;
         this.onId = null;
         this.onClose = null;
@@ -212,13 +214,16 @@ class Client {
 
         const client = new Client();
         client.Id = opts.Id || this.generateID();
+        client.Address = opts.Address || window.location.host;
+        client.Path = opts.Path || '/ws/bus';
+        client.Secure = opts.Secure || false;
         client.Autorestart = opts.Autorestart || false;
         client.RestartEvery = opts.RestartEvery || 10000;
         client.onDataWS = opts.OnDataWs;
         client.onId = opts.OnId;
         client.onClose = opts.OnClose;
-
         await client.connect(opts);
+        this.client=client;
         return client;
     }
 
@@ -227,11 +232,9 @@ class Client {
      * @param {Object} opts - Options de connexion
      */
     async connect(opts) {
-        const scheme = opts.Secure ? 'wss' : 'ws';
-        const path = opts.Path || '/ws/bus';
-        const url = `${scheme}://${opts.Address}${path}`;
-        
-        this.ServerAddr = url;
+        const scheme = this.Secure ? 'wss' : 'ws';
+        const path = this.Path;
+        const url = `${scheme}://${this.Address}${path}`;
 
         try {
             this.Conn = new WebSocket(url);
@@ -765,8 +768,8 @@ class Client {
         if (!opts) {
             opts = {
                 Id: this.Id,
-                Address: this.ServerAddr.replace(/^wss?:\/\//, '').replace(/\/.*$/, ''),
-                Secure: this.ServerAddr.startsWith('wss'),
+                Address: this.Address.replace(/^wss?:\/\//, '').replace(/\/.*$/, ''),
+                Secure: this.Address.startsWith('wss'),
                 Autorestart: this.Autorestart,
                 RestartEvery: this.RestartEvery,
                 OnDataWs: this.onDataWS,

@@ -45,6 +45,9 @@ func (router *Router) LocalStatics(dirPath, webPath string, handlerMiddlewares .
 	}
 	webPath = strings.TrimSuffix(webPath, "/")
 	handler := func(c *Context) {
+		if strings.Contains(c.Request.URL.Path, "docache") {
+			c.SetHeader("Cache-Control", "max-age=31536000")
+		}
 		http.StripPrefix(webPath, http.FileServer(http.Dir(dirPath))).ServeHTTP(c.ResponseWriter, c.Request)
 	}
 	for _, mid := range handlerMiddlewares {
@@ -68,6 +71,9 @@ func (router *Router) EmbededStatics(embeded embed.FS, pathLocalDir, webPath str
 	}
 	toembed_root := http.FileServer(http.FS(toembed_dir))
 	handler := func(c *Context) {
+		if strings.Contains(c.Request.URL.Path, "docache") {
+			c.SetHeader("Cache-Control", "max-age=31536000")
+		}
 		http.StripPrefix(webPath, toembed_root).ServeHTTP(c.ResponseWriter, c.Request)
 	}
 	for _, mid := range handlerMiddlewares {
