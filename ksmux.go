@@ -187,13 +187,16 @@ func New(config ...Config) *Router {
 				}
 			}
 		}
-
+		if router.Config.MediaDir == "" {
+			router.Config.MediaDir = "media"
+		}
 	}
 	if router.Config.Address != "" {
 		allrouters.Set(router.Config.Address, router)
 	} else if router.Config.Domain != "" {
 		allrouters.Set(router.Config.Domain, router)
 	}
+
 	router.proxies = kmap.New[string, http.Handler]()
 	router.sig = make(chan os.Signal, 1)
 	if firstRouter == nil {
@@ -865,15 +868,16 @@ func printNode(n *node, prefix string, isLast bool) {
 		paramStr = " " + fmt.Sprint(n.paramInfo.names)
 	}
 
-	if n.nType == catchAll {
+	switch n.nType {
+	case catchAll:
 		// Remove the * from path for catchAll
 		cleanPath := strings.TrimPrefix(n.path, "*")
 		fmt.Printf("%s%s*%s%s%s\n", prefix, nodePrefix, cleanPath, paramStr, handlerStr)
-	} else if n.nType == param {
+	case param:
 		// Remove the : from path for params
 		cleanPath := strings.TrimPrefix(n.path, ":")
 		fmt.Printf("%s%s:%s%s%s\n", prefix, nodePrefix, cleanPath, paramStr, handlerStr)
-	} else {
+	default:
 		fmt.Printf("%s%s%s%s%s\n", prefix, nodePrefix, n.path, paramStr, handlerStr)
 	}
 
