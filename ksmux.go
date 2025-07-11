@@ -316,6 +316,7 @@ func (router *Router) Run() {
 
 // RunTLS HTTPS server using certificates
 func (router *Router) RunTLS() {
+	COOKIES_SECURE = true
 	router.initServer(router.Config.Address)
 	router.Server.TLSConfig.MinVersion = tls.VersionTLS12
 	router.Server.TLSConfig.NextProtos = append([]string{"h2", "http/1.1"}, router.Server.TLSConfig.NextProtos...)
@@ -375,6 +376,7 @@ func (router *Router) RunTLS() {
 
 // RunAutoTLS HTTPS server generate certificates and handle renew
 func (router *Router) RunAutoTLS() {
+	COOKIES_SECURE = true
 	if router.proxies.Len() > 0 {
 		if len(router.Config.SubDomains) != router.proxies.Len() {
 			prs := router.proxies.Keys()

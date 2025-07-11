@@ -18,8 +18,8 @@ var (
 	DocsEntryFile         = "ksmuxdocs/ksmuxdocs.go"
 	OnDocsGenerationReady = func() {}
 	// ctx cookies
-	COOKIES_Expires  = 24 * 7 * time.Hour
-	COOKIES_SameSite = http.SameSiteStrictMode
+	COOKIES_Expires  = 30 * 24 * time.Hour
+	COOKIES_SameSite = http.SameSiteLaxMode
 	COOKIES_HttpOnly = true
-	COOKIES_SECURE   = true
+	COOKIES_SECURE   = false
 )
