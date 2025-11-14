@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/http/pprof"
@@ -818,6 +819,20 @@ func (router *Router) initServer(addr string) {
 	router.Server = &server
 }
 
+type tlsLogFilter struct{}
+
+func (f *tlsLogFilter) Write(p []byte) (n int, err error) {
+	s := string(p)
+
+	// Filtre some logs
+	if strings.Contains(s, "TLS handshake error") {
+		return len(p), nil // Ignorer silencieusement
+	}
+
+	// let other logs pass
+	return os.Stderr.Write(p)
+}
+
 func (router *Router) initAutoServer(tlsconf *tls.Config) {
 	var h http.Handler
 	if len(router.middlewares) > 0 {
@@ -831,6 +846,9 @@ func (router *Router) initAutoServer(tlsconf *tls.Config) {
 	} else {
 		h = router
 	}
+
+	// Créer un logger qui filtre les erreurs TLS
+	tlsErrorLogger := log.New(&tlsLogFilter{}, "", log.LstdFlags)
 	// Setup Server
 	server := http.Server{
 		Addr:         ":" + router.Config.port,
@@ -839,6 +857,7 @@ func (router *Router) initAutoServer(tlsconf *tls.Config) {
 		WriteTimeout: router.RouterConfig.WriteTimeout,
 		IdleTimeout:  router.RouterConfig.IdleTimeout,
 		TLSConfig:    tlsconf,
+		ErrorLog:     tlsErrorLogger,
 	}
 	router.Server = &server
 }
