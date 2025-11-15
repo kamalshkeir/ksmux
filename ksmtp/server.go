@@ -187,6 +187,7 @@ type SmtpServer struct {
 	devMode      bool
 	devRelayHost string
 	devRelayPort string
+	Debug        bool
 }
 
 type ConfServer struct {
@@ -206,6 +207,7 @@ type ConfServer struct {
 	DevMode      bool   // Enable development mode (skip MX lookup, use relay)
 	DevRelayHost string // SMTP relay host for dev mode (ex: "localhost")
 	DevRelayPort string // SMTP relay port for dev mode (ex: "1025" for MailHog)
+	Debug        bool
 }
 
 func NewSmtpServer(conf *ConfServer) (*SmtpServer, error) {
@@ -263,7 +265,9 @@ func NewSmtpServer(conf *ConfServer) (*SmtpServer, error) {
 			Certificates: []tls.Certificate{cert},
 			ServerName:   conf.Subdomain,
 		}
-		fmt.Printf("🔒 TLS certificate loaded for STARTTLS support\n")
+		if conf.Debug {
+			fmt.Printf("🔒 TLS certificate loaded for STARTTLS support\n")
+		}
 	}
 
 	// Initialize or load DKIM key (skip in dev mode)
@@ -290,12 +294,12 @@ func NewSmtpServer(conf *ConfServer) (*SmtpServer, error) {
 		devMode:             conf.DevMode,
 		devRelayHost:        conf.DevRelayHost,
 		devRelayPort:        conf.DevRelayPort,
+		Debug:               conf.Debug,
 	}
 
 	// Print dev mode warning
 	if conf.DevMode {
 		fmt.Printf("🚧 DEV MODE ENABLED - Emails will be relayed to %s:%s\n", conf.DevRelayHost, conf.DevRelayPort)
-		fmt.Printf("⚠️  This mode is for development only. MX lookup will be bypassed.\n")
 	}
 
 	return srv, nil
@@ -660,7 +664,7 @@ func (ss *SmtpServer) SendEmail(email *Email) error {
 			fmt.Printf("⚠️ DKIM signing failed: %v\n", err)
 			// Continue without DKIM signature
 			signedData = emailData.String()
-		} else {
+		} else if ss.Debug {
 			fmt.Printf("🔐 DKIM signature applied\n")
 		}
 	} else {
@@ -677,7 +681,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 
 	clientAddr := conn.RemoteAddr().String()
 	clientIP := strings.Split(clientAddr, ":")[0]
-	fmt.Printf("📞 [%s] New SMTP connection from %s\n", time.Now().Format("15:04:05"), clientAddr)
+	if ss.Debug {
+		fmt.Printf("📞 [%s] New SMTP connection from %s\n", time.Now().Format("15:04:05"), clientAddr)
+	}
 
 	// SMTP greeting
 	conn.Write([]byte("220 " + ss.Subdomain + " ESMTP KSMTP Server Ready\r\n"))
@@ -712,7 +718,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 			continue
 		}
 
-		fmt.Printf("📨 [%s] Command: %s\n", time.Now().Format("15:04:05"), command)
+		if ss.Debug {
+			fmt.Printf("📨 [%s] Command: %s\n", time.Now().Format("15:04:05"), command)
+		}
 
 		parts := strings.Fields(command)
 		if len(parts) == 0 {
@@ -748,7 +756,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 		case strings.HasPrefix(strings.ToUpper(command), "MAIL FROM:"):
 			mailFrom = extractEmail(command)
 			conn.Write([]byte("250 OK\r\n"))
-			fmt.Printf("✅ [%s] MAIL FROM: %s\n", time.Now().Format("15:04:05"), mailFrom)
+			if ss.Debug {
+				fmt.Printf("✅ [%s] MAIL FROM: %s\n", time.Now().Format("15:04:05"), mailFrom)
+			}
 
 		case strings.HasPrefix(strings.ToUpper(command), "RCPT TO:"):
 			rcptTo = extractEmail(command)
@@ -761,7 +771,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 					continue
 				}
 				conn.Write([]byte("250 OK\r\n"))
-				fmt.Printf("✅ [%s] RCPT TO: %s (local)\n", time.Now().Format("15:04:05"), rcptTo)
+				if ss.Debug {
+					fmt.Printf("✅ [%s] RCPT TO: %s (local)\n", time.Now().Format("15:04:05"), rcptTo)
+				}
 			} else {
 				// 🛡️ SÉCURITÉ: Vérifier si l'authentification est requise pour le relais
 				if ss.requiresAuthentication(mailFrom, rcptTo) && !authenticated {
@@ -771,7 +783,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 				}
 				// External email - we'll relay it
 				conn.Write([]byte("250 OK - Will relay\r\n"))
-				fmt.Printf("🔄 [%s] RCPT TO: %s (relay)\n", time.Now().Format("15:04:05"), rcptTo)
+				if ss.Debug {
+					fmt.Printf("🔄 [%s] RCPT TO: %s (relay)\n", time.Now().Format("15:04:05"), rcptTo)
+				}
 			}
 
 		case strings.HasPrefix(strings.ToUpper(command), "DATA"):
@@ -814,7 +828,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 			// Process the email
 			ss.processEmail(mailFrom, rcptTo, emailData.String(), clientIP)
 			conn.Write([]byte("250 OK: Message accepted for delivery\r\n"))
-			fmt.Printf("✅ [%s] Email processed: %s → %s\n", time.Now().Format("15:04:05"), mailFrom, rcptTo)
+			if ss.Debug {
+				fmt.Printf("✅ [%s] Email processed: %s → %s\n", time.Now().Format("15:04:05"), mailFrom, rcptTo)
+			}
 			// After DATA, the state should reset for the next email in the same session
 			mailFrom = ""
 			rcptTo = ""
@@ -826,7 +842,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 
 		case strings.HasPrefix(strings.ToUpper(command), "QUIT"):
 			conn.Write([]byte("221 Bye\r\n"))
-			fmt.Printf("👋 [%s] Connection closed gracefully\n", time.Now().Format("15:04:05"))
+			if ss.Debug {
+				fmt.Printf("👋 [%s] Connection closed gracefully\n", time.Now().Format("15:04:05"))
+			}
 			return
 
 		case strings.HasPrefix(strings.ToUpper(command), "AUTH"):
@@ -866,7 +884,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 					authenticated = true
 					authenticatedUser = string(username)
 					conn.Write([]byte("235 Authentication successful\r\n"))
-					fmt.Printf("🔐 [%s] User authenticated: %s\n", time.Now().Format("15:04:05"), authenticatedUser)
+					if ss.Debug {
+						fmt.Printf("🔐 [%s] User authenticated: %s\n", time.Now().Format("15:04:05"), authenticatedUser)
+					}
 				} else {
 					conn.Write([]byte("535 Authentication failed\r\n"))
 					fmt.Printf("❌ [%s] Authentication failed for: %s\n", time.Now().Format("15:04:05"), string(username))
@@ -891,7 +911,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 							authenticated = true
 							authenticatedUser = username
 							conn.Write([]byte("235 Authentication successful\r\n"))
-							fmt.Printf("🔐 [%s] User authenticated: %s\n", time.Now().Format("15:04:05"), authenticatedUser)
+							if ss.Debug {
+								fmt.Printf("🔐 [%s] User authenticated: %s\n", time.Now().Format("15:04:05"), authenticatedUser)
+							}
 						} else {
 							conn.Write([]byte("535 Authentication failed\r\n"))
 							fmt.Printf("❌ [%s] Authentication failed for: %s\n", time.Now().Format("15:04:05"), username)
@@ -922,7 +944,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 							authenticated = true
 							authenticatedUser = username
 							conn.Write([]byte("235 Authentication successful\r\n"))
-							fmt.Printf("🔐 [%s] User authenticated: %s\n", time.Now().Format("15:04:05"), authenticatedUser)
+							if ss.Debug {
+								fmt.Printf("🔐 [%s] User authenticated: %s\n", time.Now().Format("15:04:05"), authenticatedUser)
+							}
 						} else {
 							conn.Write([]byte("535 Authentication failed\r\n"))
 							fmt.Printf("❌ [%s] Authentication failed for: %s\n", time.Now().Format("15:04:05"), username)
@@ -952,7 +976,9 @@ func (ss *SmtpServer) handleSMTPConnection(conn net.Conn) {
 				return
 			}
 
-			fmt.Printf("🔒 [%s] TLS connection established\n", time.Now().Format("15:04:05"))
+			if ss.Debug {
+				fmt.Printf("🔒 [%s] TLS connection established\n", time.Now().Format("15:04:05"))
+			}
 
 			// Replace the connection with the TLS connection
 			conn = tlsConn
@@ -983,9 +1009,11 @@ func (ss *SmtpServer) processEmail(from, to, data, clientIP string) {
 				// Appliquer le filtrage anti-spam
 				spamResult := ss.spamFilter.CheckEmail(pe, clientIP)
 
-				fmt.Printf("🛡️ [SPAM] Email from %s: Score=%d, Action=%s\n", from, spamResult.Score, spamResult.Action)
-				if len(spamResult.Details) > 0 {
-					fmt.Printf("🛡️ [SPAM] Details: %s\n", strings.Join(spamResult.Details, "; "))
+				if ss.Debug {
+					fmt.Printf("🛡️ [SPAM] Email from %s: Score=%d, Action=%s\n", from, spamResult.Score, spamResult.Action)
+					if len(spamResult.Details) > 0 {
+						fmt.Printf("🛡️ [SPAM] Details: %s\n", strings.Join(spamResult.Details, "; "))
+					}
 				}
 
 				switch spamResult.Action {
@@ -997,7 +1025,9 @@ func (ss *SmtpServer) processEmail(from, to, data, clientIP string) {
 					// Marquer l'email comme spam mais le traiter quand même
 					pe.Subject = "[SPAM] " + pe.Subject
 				case "ACCEPT":
-					fmt.Printf("✅ [SPAM] Email accepted: %s\n", spamResult.Reason)
+					if ss.Debug {
+						fmt.Printf("✅ [SPAM] Email accepted: %s\n", spamResult.Reason)
+					}
 				}
 
 				ss.onRecv(pe)
@@ -1005,7 +1035,9 @@ func (ss *SmtpServer) processEmail(from, to, data, clientIP string) {
 		}
 	} else {
 		// We send an email
-		fmt.Println("SENDING EMAIL, from:", from, ", to:", to)
+		if ss.Debug {
+			fmt.Println("SENDING EMAIL, from:", from, ", to:", to)
+		}
 		ss.relayEmail(from, to, data)
 	}
 }
@@ -1031,7 +1063,9 @@ type FileInfo struct {
 // Helper function to establish SMTP connection with TLS
 func (ss *SmtpServer) connectSMTP(mx *net.MX) (*smtp.Client, error) {
 	addr := fmt.Sprintf("%s:25", mx.Host)
-	fmt.Printf("📡 Trying to relay via %s (preference %d)...\n", addr, mx.Pref)
+	if ss.Debug {
+		fmt.Printf("📡 Trying to relay via %s (preference %d)...\n", addr, mx.Pref)
+	}
 
 	// Connect to the remote SMTP server.
 	c, err := smtp.Dial(addr)
@@ -1053,7 +1087,7 @@ func (ss *SmtpServer) connectSMTP(mx *net.MX) (*smtp.Client, error) {
 		if err := c.StartTLS(tlsConfig); err != nil {
 			fmt.Printf("⚠️ STARTTLS failed for %s: %v\n", mx.Host, err)
 			// Continue without TLS if it fails
-		} else {
+		} else if ss.Debug {
 			fmt.Printf("🔒 TLS encryption enabled for %s\n", mx.Host)
 		}
 	}
@@ -1062,7 +1096,9 @@ func (ss *SmtpServer) connectSMTP(mx *net.MX) (*smtp.Client, error) {
 }
 
 func (ss *SmtpServer) relayEmailData(from, to, data string) error {
-	fmt.Printf("🔄 Relaying email from <%s> to <%s>...\n", from, to)
+	if ss.Debug {
+		fmt.Printf("🔄 Relaying email from <%s> to <%s>...\n", from, to)
+	}
 
 	// *** DEV MODE: Force relay to development SMTP server ***
 	if ss.devMode && ss.devRelayHost != "" {
@@ -1077,7 +1113,9 @@ func (ss *SmtpServer) relayEmailData(from, to, data string) error {
 	}
 	domain := parts[1]
 
-	fmt.Printf("🔍 Looking up MX records for %s...\n", domain)
+	if ss.Debug {
+		fmt.Printf("🔍 Looking up MX records for %s...\n", domain)
+	}
 	mxs, err := net.LookupMX(domain)
 	if err != nil {
 		return fmt.Errorf("failed to look up MX records for %s: %w", domain, err)
@@ -1092,7 +1130,9 @@ func (ss *SmtpServer) relayEmailData(from, to, data string) error {
 		c, err := ss.connectSMTP(mx)
 		if err != nil {
 			lastErr = err
-			fmt.Printf("⚠️ %v. Trying next server...\n", lastErr)
+			if ss.Debug {
+				fmt.Printf("⚠️ %v. Trying next server...\n", lastErr)
+			}
 			continue
 		}
 
@@ -1128,7 +1168,9 @@ func (ss *SmtpServer) relayEmailData(from, to, data string) error {
 		w.Close()
 		c.Quit()
 
-		fmt.Printf("✅ Email successfully sent to <%s> via %s\n", to, mx.Host)
+		if ss.Debug {
+			fmt.Printf("✅ Email successfully sent to <%s> via %s\n", to, mx.Host)
+		}
 		return nil // Success!
 	}
 
@@ -1178,7 +1220,9 @@ func (ss *SmtpServer) sendViaDevRelay(from, to, data string) error {
 }
 
 func (ss *SmtpServer) relayEmail(from, to, data string) {
-	fmt.Printf("🔄 Relaying email from <%s> to <%s>...\n", from, to)
+	if ss.Debug {
+		fmt.Printf("🔄 Relaying email from <%s> to <%s>...\n", from, to)
+	}
 
 	// Extract domain from recipient email
 	parts := strings.Split(to, "@")
@@ -1188,7 +1232,9 @@ func (ss *SmtpServer) relayEmail(from, to, data string) {
 	}
 	domain := parts[1]
 
-	fmt.Printf("🔍 Looking up MX records for %s...\n", domain)
+	if ss.Debug {
+		fmt.Printf("🔍 Looking up MX records for %s...\n", domain)
+	}
 	mxs, err := net.LookupMX(domain)
 	if err != nil {
 		fmt.Printf("❌ Failed to look up MX records for %s: %v\n", domain, err)
@@ -1205,7 +1251,9 @@ func (ss *SmtpServer) relayEmail(from, to, data string) {
 		c, err := ss.connectSMTP(mx)
 		if err != nil {
 			lastErr = err
-			fmt.Printf("⚠️ %v. Trying next server...\n", lastErr)
+			if ss.Debug {
+				fmt.Printf("⚠️ %v. Trying next server...\n", lastErr)
+			}
 			continue
 		}
 
@@ -1241,7 +1289,9 @@ func (ss *SmtpServer) relayEmail(from, to, data string) {
 		w.Close()
 		c.Quit()
 
-		fmt.Printf("✅ Email successfully relayed to <%s> via %s\n", to, mx.Host)
+		if ss.Debug {
+			fmt.Printf("✅ Email successfully relayed to <%s> via %s\n", to, mx.Host)
+		}
 		return // Success!
 	}
 
@@ -1315,7 +1365,7 @@ func isValidSMTPCommand(command string) bool {
 func initializeDKIMKey() error {
 	// Check if DKIM key file exists
 	if _, err := os.Stat(dkimKeyFile); err == nil {
-		fmt.Printf("🔑 DKIM key file found: %s\n", dkimKeyFile)
+		// fmt.Printf("🔑 DKIM key file found: %s\n", dkimKeyFile)
 		return nil
 	}
 
@@ -1620,7 +1670,7 @@ func (ss *SmtpServer) SendEmailViaTunnel(email *Email) error {
 			fmt.Printf("⚠️ DKIM signing failed: %v\n", err)
 			// Continue without DKIM signature
 			signedData = emailData.String()
-		} else {
+		} else if ss.Debug {
 			fmt.Printf("🔐 DKIM signature applied\n")
 		}
 	} else {
@@ -1629,7 +1679,9 @@ func (ss *SmtpServer) SendEmailViaTunnel(email *Email) error {
 	}
 
 	// Connect directly to localhost:25 (SSH tunnel)
-	fmt.Printf("🚇 Connecting via SSH tunnel to localhost:25...\n")
+	if ss.Debug {
+		fmt.Printf("🚇 Connecting via SSH tunnel to localhost:25...\n")
+	}
 
 	c, err := smtp.Dial("localhost:25")
 	if err != nil {
@@ -1665,7 +1717,9 @@ func (ss *SmtpServer) SendEmailViaTunnel(email *Email) error {
 	}
 	w.Close()
 
-	fmt.Printf("✅ Email sent via SSH tunnel!\n")
+	if ss.Debug {
+		fmt.Printf("✅ Email sent via SSH tunnel!\n")
+	}
 	return nil
 }
 
@@ -1716,7 +1770,9 @@ func (ss *SmtpServer) RegisterTemplate(name, subject, bodyTXT, bodyHTML string) 
 		BodyTXT:  bodyTXT,
 		BodyHTML: bodyHTML,
 	}
-	fmt.Printf("📧 Template '%s' registered successfully\n", name)
+	if ss.Debug {
+		fmt.Printf("📧 Template '%s' registered successfully\n", name)
+	}
 }
 
 // SendTemplate sends an email using a registered template with data substitution
@@ -1773,7 +1829,9 @@ func (ss *SmtpServer) SendTemplate(templateName, from, to string, data map[strin
 	}
 
 	// Send the email
-	fmt.Printf("📧 Sending email using template '%s' from %s to %s\n", templateName, from, to)
+	if ss.Debug {
+		fmt.Printf("📧 Sending email using template '%s' from %s to %s\n", templateName, from, to)
+	}
 	return ss.SendEmail(email)
 }
 
@@ -1846,7 +1904,9 @@ func (ss *SmtpServer) SendTemplateViaTunnel(templateName, from, to string, data 
 	}
 
 	// Send the email via tunnel
-	fmt.Printf("🚇 Sending email using template '%s' via tunnel from %s to %s\n", templateName, from, to)
+	if ss.Debug {
+		fmt.Printf("🚇 Sending email using template '%s' via tunnel from %s to %s\n", templateName, from, to)
+	}
 	return ss.SendEmailViaTunnel(email)
 }
 
@@ -1857,7 +1917,9 @@ func (ss *SmtpServer) DeleteTemplate(name string) bool {
 	}
 	if _, exists := ss.templates[name]; exists {
 		delete(ss.templates, name)
-		fmt.Printf("🗑️ Template '%s' deleted successfully\n", name)
+		if ss.Debug {
+			fmt.Printf("🗑️ Template '%s' deleted successfully\n", name)
+		}
 		return true
 	}
 	return false
@@ -1878,7 +1940,9 @@ func (ss *SmtpServer) UpdateTemplate(name, subject, bodyTXT, bodyHTML string) er
 		BodyTXT:  bodyTXT,
 		BodyHTML: bodyHTML,
 	}
-	fmt.Printf("✏️ Template '%s' updated successfully\n", name)
+	if ss.Debug {
+		fmt.Printf("✏️ Template '%s' updated successfully\n", name)
+	}
 	return nil
 }
 
@@ -1924,8 +1988,9 @@ func (ss *SmtpServer) ValidateTemplate(name string, sampleData map[string]interf
 			return fmt.Errorf("HTML body template execution failed: %w", err)
 		}
 	}
-
-	fmt.Printf("✅ Template '%s' validation successful\n", name)
+	if ss.Debug {
+		fmt.Printf("✅ Template '%s' validation successful\n", name)
+	}
 	return nil
 }
 
@@ -1947,25 +2012,33 @@ func (ss *SmtpServer) SetSpamFilterEnabled(enabled bool) {
 // AddSpamBlacklistIP adds an IP to the spam blacklist
 func (ss *SmtpServer) AddSpamBlacklistIP(ip string) {
 	ss.spamFilter.AddBlacklistedIP(ip)
-	fmt.Printf("🚫 IP %s added to spam blacklist\n", ip)
+	if ss.Debug {
+		fmt.Printf("🚫 IP %s added to spam blacklist\n", ip)
+	}
 }
 
 // AddSpamBlacklistDomain adds a domain to the spam blacklist
 func (ss *SmtpServer) AddSpamBlacklistDomain(domain string) {
 	ss.spamFilter.AddBlacklistedDomain(domain)
-	fmt.Printf("🚫 Domain %s added to spam blacklist\n", domain)
+	if ss.Debug {
+		fmt.Printf("🚫 Domain %s added to spam blacklist\n", domain)
+	}
 }
 
 // RemoveSpamBlacklistIP removes an IP from the spam blacklist
 func (ss *SmtpServer) RemoveSpamBlacklistIP(ip string) {
 	ss.spamFilter.RemoveBlacklistedIP(ip)
-	fmt.Printf("✅ IP %s removed from spam blacklist\n", ip)
+	if ss.Debug {
+		fmt.Printf("✅ IP %s removed from spam blacklist\n", ip)
+	}
 }
 
 // RemoveSpamBlacklistDomain removes a domain from the spam blacklist
 func (ss *SmtpServer) RemoveSpamBlacklistDomain(domain string) {
 	ss.spamFilter.RemoveBlacklistedDomain(domain)
-	fmt.Printf("✅ Domain %s removed from spam blacklist\n", domain)
+	if ss.Debug {
+		fmt.Printf("✅ Domain %s removed from spam blacklist\n", domain)
+	}
 }
 
 // GetSpamFilterStats returns spam filter statistics
