@@ -188,10 +188,8 @@ func (i *IMAPServer) Start() error {
 	}
 
 	// Keep the main goroutine alive
-	select {
-	case <-i.done:
-		return nil
-	}
+	<-i.done
+	return nil
 }
 
 // startServer starts a regular IMAP server

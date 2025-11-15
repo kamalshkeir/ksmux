@@ -2,60 +2,80 @@
 //
 // USAGE SIMPLE:
 //
-//	// 1. Créer la configuration
-//	conf := &ksmtp.ConfServer{
-//	    Domain:    "example.com",
-//	    Subdomain: "mail.example.com",
-//	    IPv4:      "203.0.113.10",
-//	    IPv6:      "2001:db8::1",
-//	    Address:   ":25",
-//	    Users: map[string]string{
-//	        "admin": "password123",
-//	        "user":  "mypassword",
-//	    },
-//	    RequireAuthForExternal: true,  // Auth pour relay
-//	    RequireAuthForLocal:    false, // Pas d'auth pour réception
-//	    TLSCertPath: "/path/to/cert.pem", // Optionnel
-//	    TLSKeyPath:  "/path/to/key.pem",  // Optionnel
-//	}
+//		// 1. Créer la configuration
+//		conf := &ksmtp.ConfServer{
+//		    Domain:    "example.com",
+//		    Subdomain: "mail.example.com",
+//		    IPv4:      "203.0.113.10",
+//		    IPv6:      "2001:db8::1",
+//		    Address:   ":25",
+//		    Users: map[string]string{
+//		        "admin": "password123",
+//		        "user":  "mypassword",
+//		    },
+//		    RequireAuthForExternal: true,  // Auth pour relay
+//		    RequireAuthForLocal:    false, // Pas d'auth pour réception
+//		    TLSCertPath: "/path/to/cert.pem", // Optionnel
+//		    TLSKeyPath:  "/path/to/key.pem",  // Optionnel
+//		    // Mode DEV (pour développement local)
+//		    DevMode:      false, // true pour dev local
+//		    DevRelayHost: "",    // "localhost" pour MailHog
+//		    DevRelayPort: "",    // "1025" pour MailHog
+//		}
 //
-//	// 2. Créer le serveur
-//	server, err := ksmtp.NewSmtpServer(conf)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
+//		// 2. Créer le serveur
+//		server, err := ksmtp.NewSmtpServer(conf)
+//		if err != nil {
+//		    log.Fatal(err)
+//		}
 //
-//	// 3. Configurer les callbacks
-//	server.OnRecv(func(email *ksmtp.Email) {
-//	    fmt.Printf("Email reçu: %s -> %s\n", email.From, email.To)
-//	})
+//	 server.PrintDNSConfiguration()
 //
-//	// 4. Enregistrer des templates
-//	server.RegisterTemplate("welcome",
-//	    "Bienvenue {{.Name}}!",
-//	    "Bonjour {{.Name}}, bienvenue!",
-//	    "<h1>Bonjour {{.Name}}</h1><p>Bienvenue!</p>")
+//		// 3. Configurer les callbacks
+//		server.OnRecv(func(email *ksmtp.Email) {
+//		    fmt.Printf("Email reçu: %s -> %s\n", email.From, email.To)
+//		})
 //
-//	// 5. Démarrer le serveur
-//	go server.Start()
+//		// 4. Enregistrer des templates
+//		server.RegisterTemplate("welcome",
+//		    "Bienvenue {{.Name}}!",
+//		    "Bonjour {{.Name}}, bienvenue!",
+//		    "<h1>Bonjour {{.Name}}</h1><p>Bienvenue!</p>")
 //
-//	// 6. Envoyer des emails
-//	email := &ksmtp.Email{
-//	    From:    "admin@example.com",
-//	    To:      "user@gmail.com",
-//	    Subject: "Test",
-//	    BodyTXT: "Hello World!",
-//	}
-//	server.SendEmail(email)
+//		// 5. Démarrer le serveur
+//		go server.Start()
 //
-//	// 7. Utiliser les templates
-//	data := map[string]interface{}{"Name": "John"}
-//	server.SendTemplate("welcome", "admin@example.com", "user@gmail.com", data)
+//		// 6. Envoyer des emails
+//		email := &ksmtp.Email{
+//		    From:    "admin@example.com",
+//		    To:      "user@gmail.com",
+//		    Subject: "Test",
+//		    BodyTXT: "Hello World!",
+//		}
+//		server.SendEmail(email)
 //
-//	// 8. Gérer l'anti-spam
-//	server.AddSpamBlacklistIP("203.0.113.100")
-//	server.SetSpamFilterEnabled(true)
-//	server.PrintSpamFilterStats()
+//		// 7. Utiliser les templates
+//		data := map[string]interface{}{"Name": "John"}
+//		server.SendTemplate("welcome", "admin@example.com", "user@gmail.com", data)
+//
+//		// 8. Gérer l'anti-spam
+//		server.AddSpamBlacklistIP("203.0.113.100")
+//		server.SetSpamFilterEnabled(true)
+//		server.PrintSpamFilterStats()
+//
+//		// 9. MODE DEV - Développement local (voir DEV_MODE.md)
+//		// Lance MailHog: brew install mailhog && mailhog
+//		confDev := &ksmtp.ConfServer{
+//		    Domain:       "localhost",
+//		    Subdomain:    "mail.localhost",
+//		    IPv4:         "127.0.0.1",
+//		    Address:      ":2525",
+//		    DevMode:      true,        // Active le mode dev
+//		    DevRelayHost: "localhost", // MailHog host
+//		    DevRelayPort: "1025",      // MailHog port
+//		}
+//		serverDev, _ := ksmtp.NewSmtpServer(confDev)
+//		serverDev.SendEmail(email) // Envoyé vers MailHog (http://localhost:8025)
 //
 // FONCTIONNALITÉS:
 //   - Envoi/réception d'emails avec MIME
@@ -163,6 +183,10 @@ type SmtpServer struct {
 	tlsConfig *tls.Config
 	// Anti-spam
 	spamFilter *SpamFilter
+	// Dev Mode
+	devMode      bool
+	devRelayHost string
+	devRelayPort string
 }
 
 type ConfServer struct {
@@ -178,6 +202,10 @@ type ConfServer struct {
 	// TLS Configuration
 	TLSCertPath string // Path to TLS certificate file
 	TLSKeyPath  string // Path to TLS private key file
+	// Dev Mode
+	DevMode      bool   // Enable development mode (skip MX lookup, use relay)
+	DevRelayHost string // SMTP relay host for dev mode (ex: "localhost")
+	DevRelayPort string // SMTP relay port for dev mode (ex: "1025" for MailHog)
 }
 
 func NewSmtpServer(conf *ConfServer) (*SmtpServer, error) {
@@ -185,19 +213,35 @@ func NewSmtpServer(conf *ConfServer) (*SmtpServer, error) {
 		return nil, fmt.Errorf("no conf provided")
 	}
 
-	if conf.IPv4 == "" {
-		return nil, fmt.Errorf("ipv4 is required: ex:178.12.52.12")
-	}
-	if conf.Subdomain != "" {
-		sp := strings.Split(conf.Subdomain, ".")
-		if len(sp) < 3 {
-			return nil, fmt.Errorf("bad subdomain")
+	// En mode DEV, les validations sont plus souples
+	if !conf.DevMode {
+		if conf.IPv4 == "" {
+			return nil, fmt.Errorf("ipv4 is required: ex:178.12.52.12")
+		}
+		if conf.Subdomain != "" {
+			sp := strings.Split(conf.Subdomain, ".")
+			if len(sp) < 3 {
+				return nil, fmt.Errorf("bad subdomain: must have at least 3 parts (ex: mail.example.com)")
+			}
+		}
+	} else {
+		// Mode DEV: Valeurs par défaut si non spécifiées
+		if conf.IPv4 == "" {
+			conf.IPv4 = "127.0.0.1"
+		}
+		if conf.Subdomain == "" {
+			conf.Subdomain = "localhost"
+		}
+		if conf.Domain == "" {
+			conf.Domain = "localhost"
 		}
 	}
 
-	if conf.Domain == "" {
+	if conf.Domain == "" && conf.Subdomain != "" {
 		sp := strings.Split(conf.Subdomain, ".")
-		conf.Domain = sp[len(sp)-2] + "." + sp[len(sp)-1]
+		if len(sp) >= 2 {
+			conf.Domain = sp[len(sp)-2] + "." + sp[len(sp)-1]
+		}
 	}
 
 	// Initialize users map
@@ -222,10 +266,12 @@ func NewSmtpServer(conf *ConfServer) (*SmtpServer, error) {
 		fmt.Printf("🔒 TLS certificate loaded for STARTTLS support\n")
 	}
 
-	// Initialize or load DKIM key
-	err := initializeDKIMKey()
-	if err != nil {
-		fmt.Printf("⚠️ DKIM key initialization failed: %v\n", err)
+	// Initialize or load DKIM key (skip in dev mode)
+	if !conf.DevMode {
+		err := initializeDKIMKey()
+		if err != nil {
+			fmt.Printf("⚠️ DKIM key initialization failed: %v\n", err)
+		}
 	}
 
 	srv := &SmtpServer{
@@ -241,6 +287,15 @@ func NewSmtpServer(conf *ConfServer) (*SmtpServer, error) {
 		templates:           make(map[string]*EmailTemplate),
 		tlsConfig:           tlsConfig,
 		spamFilter:          NewSpamFilter(),
+		devMode:             conf.DevMode,
+		devRelayHost:        conf.DevRelayHost,
+		devRelayPort:        conf.DevRelayPort,
+	}
+
+	// Print dev mode warning
+	if conf.DevMode {
+		fmt.Printf("🚧 DEV MODE ENABLED - Emails will be relayed to %s:%s\n", conf.DevRelayHost, conf.DevRelayPort)
+		fmt.Printf("⚠️  This mode is for development only. MX lookup will be bypassed.\n")
 	}
 
 	return srv, nil
@@ -455,10 +510,11 @@ func (ss *SmtpServer) ParseRawEmail(from, data string) *Email {
 						continue
 					}
 					subPartMediaType, _, _ := mime.ParseMediaType(subPart.Header.Get("Content-Type"))
-					if subPartMediaType == "text/plain" {
+					switch subPartMediaType {
+					case "text/plain":
 						body, _ := io.ReadAll(subPart)
 						pe.BodyTXT = string(body)
-					} else if subPartMediaType == "text/html" {
+					case "text/html":
 						body, _ := io.ReadAll(subPart)
 						pe.BodyHTML = string(body)
 					}
@@ -566,7 +622,7 @@ func (ss *SmtpServer) SendEmail(email *Email) error {
 		// Attachments
 		for _, file := range email.Files {
 			emailData.WriteString(fmt.Sprintf("--%s\r\n", boundary))
-			emailData.WriteString(fmt.Sprintf("Content-Type: application/octet-stream\r\n"))
+			emailData.WriteString("Content-Type: application/octet-stream\r\n")
 			emailData.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n", file.Filename))
 			emailData.WriteString("Content-Transfer-Encoding: base64\r\n")
 			emailData.WriteString("\r\n")
@@ -595,14 +651,21 @@ func (ss *SmtpServer) SendEmail(email *Email) error {
 		emailData.WriteString("\r\n")
 	}
 
-	// Sign with DKIM before sending
-	signedData, err := ss.signDKIM(emailData.String())
-	if err != nil {
-		fmt.Printf("⚠️ DKIM signing failed: %v\n", err)
-		// Continue without DKIM signature
-		signedData = emailData.String()
+	// Sign with DKIM before sending (skip in dev mode)
+	var signedData string
+	if !ss.devMode {
+		var err error
+		signedData, err = ss.signDKIM(emailData.String())
+		if err != nil {
+			fmt.Printf("⚠️ DKIM signing failed: %v\n", err)
+			// Continue without DKIM signature
+			signedData = emailData.String()
+		} else {
+			fmt.Printf("🔐 DKIM signature applied\n")
+		}
 	} else {
-		fmt.Printf("🔐 DKIM signature applied\n")
+		// Dev mode: skip DKIM signing
+		signedData = emailData.String()
 	}
 
 	// Use the existing relay function
@@ -1001,6 +1064,12 @@ func (ss *SmtpServer) connectSMTP(mx *net.MX) (*smtp.Client, error) {
 func (ss *SmtpServer) relayEmailData(from, to, data string) error {
 	fmt.Printf("🔄 Relaying email from <%s> to <%s>...\n", from, to)
 
+	// *** DEV MODE: Force relay to development SMTP server ***
+	if ss.devMode && ss.devRelayHost != "" {
+		return ss.sendViaDevRelay(from, to, data)
+	}
+
+	// PRODUCTION MODE: Normal MX lookup and relay
 	// Extract domain from recipient email
 	parts := strings.Split(to, "@")
 	if len(parts) != 2 {
@@ -1064,6 +1133,48 @@ func (ss *SmtpServer) relayEmailData(from, to, data string) error {
 	}
 
 	return fmt.Errorf("all MX servers for %s failed: %w", domain, lastErr)
+}
+
+// sendViaDevRelay sends email via development relay server (MailHog, Mailtrap, etc.)
+func (ss *SmtpServer) sendViaDevRelay(from, to, data string) error {
+	addr := ss.devRelayHost + ":" + ss.devRelayPort
+
+	// Connect to dev relay
+	c, err := smtp.Dial(addr)
+	if err != nil {
+		return fmt.Errorf("failed to connect to dev relay %s: %w", addr, err)
+	}
+	defer c.Quit()
+
+	// Send HELO/EHLO
+	if err := c.Hello(ss.Subdomain); err != nil {
+		return fmt.Errorf("HELO command failed: %w", err)
+	}
+
+	// Set the sender
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("MAIL FROM failed: %w", err)
+	}
+
+	// Set the recipient
+	if err := c.Rcpt(to); err != nil {
+		return fmt.Errorf("RCPT TO failed: %w", err)
+	}
+
+	// Send the email body
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("DATA command failed: %w", err)
+	}
+
+	_, err = w.Write([]byte(data))
+	if err != nil {
+		w.Close()
+		return fmt.Errorf("writing data failed: %w", err)
+	}
+	w.Close()
+
+	return nil
 }
 
 func (ss *SmtpServer) relayEmail(from, to, data string) {
@@ -1471,7 +1582,7 @@ func (ss *SmtpServer) SendEmailViaTunnel(email *Email) error {
 		// Attachments
 		for _, file := range email.Files {
 			emailData.WriteString(fmt.Sprintf("--%s\r\n", boundary))
-			emailData.WriteString(fmt.Sprintf("Content-Type: application/octet-stream\r\n"))
+			emailData.WriteString("Content-Type: application/octet-stream\r\n")
 			emailData.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n", file.Filename))
 			emailData.WriteString("Content-Transfer-Encoding: base64\r\n")
 			emailData.WriteString("\r\n")
@@ -1500,14 +1611,21 @@ func (ss *SmtpServer) SendEmailViaTunnel(email *Email) error {
 		emailData.WriteString("\r\n")
 	}
 
-	// Sign with DKIM before sending
-	signedData, err := ss.signDKIM(emailData.String())
-	if err != nil {
-		fmt.Printf("⚠️ DKIM signing failed: %v\n", err)
-		// Continue without DKIM signature
-		signedData = emailData.String()
+	// Sign with DKIM before sending (skip in dev mode)
+	var signedData string
+	if !ss.devMode {
+		var err error
+		signedData, err = ss.signDKIM(emailData.String())
+		if err != nil {
+			fmt.Printf("⚠️ DKIM signing failed: %v\n", err)
+			// Continue without DKIM signature
+			signedData = emailData.String()
+		} else {
+			fmt.Printf("🔐 DKIM signature applied\n")
+		}
 	} else {
-		fmt.Printf("🔐 DKIM signature applied\n")
+		// Dev mode: skip DKIM signing
+		signedData = emailData.String()
 	}
 
 	// Connect directly to localhost:25 (SSH tunnel)

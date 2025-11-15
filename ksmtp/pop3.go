@@ -182,10 +182,8 @@ func (p *POP3Server) Start() error {
 	}
 
 	// Keep the main goroutine alive
-	select {
-	case <-p.done:
-		return nil
-	}
+	<-p.done
+	return nil
 }
 
 // startServer starts a regular POP3 server
