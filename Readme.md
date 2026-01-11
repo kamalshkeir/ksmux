@@ -284,20 +284,21 @@ func main() {
 	err = app.LocalTemplates("temps")
 	lg.CheckError(err)
 
-	// Setup load balancer for /api path, distributing requests between two backend servers
-	err = app.LoadBalancer("/",
-		ksmux.BackendOpt{
-			Url: "localhost:8081",
+	// Load Balancer
+    // !! Backends should have /health that return 200 status code
+    err := app.LoadBalancer("/*",
+        ksmux.BackendOpt{
+			Url: "http://localhost:9001",
 			Middlewares: []ksmux.Handler{
 				func(c *ksmux.Context) {
-					fmt.Println("from middleware 8081")
+					fmt.Println("from middleware 9001")
 				},
 			},
 		},
-		ksmux.BackendOpt{
-			Url: "localhost:8082",
-		},
-	)
+        ksmux.BackendOpt{Url: "http://localhost:9002"},
+        ksmux.BackendOpt{Url: "http://localhost:9003"},
+    )
+    
 	lg.CheckError(err)
 
 	app.Run(":9313")
