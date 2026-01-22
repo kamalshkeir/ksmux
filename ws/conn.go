@@ -442,11 +442,6 @@ func (c *Conn) prepareFrame(messageType int, data []byte) []byte {
 }
 
 // readRequest represents a read operation
-type readRequest struct {
-	conn *Conn
-	done chan readResult
-}
-
 type readResult struct {
 	messageType int
 	data        []byte
@@ -736,43 +731,6 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 		c.writeFatal(ErrCloseSent)
 	}
 	return err
-}
-
-// beginMessage prepares a connection and message writer for a new message.
-func (c *Conn) beginMessage(mw *messageWriter, messageType int) error {
-	// Close previous writer if not already closed by the application. It's
-	// probably better to return an error in this situation, but we cannot
-	// change this without breaking existing applications.
-	if c.messageReader != nil {
-		c.messageReader.Close()
-		c.messageReader = nil
-	}
-
-	if !isControl(messageType) && !isData(messageType) {
-		return errBadWriteOpCode
-	}
-
-	c.writeErrMu.Lock()
-	if c.writeErr != nil {
-		err := c.writeErr
-		c.writeErrMu.Unlock()
-		return err
-	}
-	c.writeErrMu.Unlock()
-
-	mw.c = c
-	mw.frameType = messageType
-	mw.pos = maxFrameHeaderSize
-
-	if c.writeBuf == nil {
-		wpd, ok := c.bufferPool.Get().(writePoolData)
-		if ok {
-			c.writeBuf = wpd.buf
-		} else {
-			c.writeBuf = make([]byte, c.writeBufSize)
-		}
-	}
-	return nil
 }
 
 // NextWriter returns a writer for the next message to send. The writer's Close

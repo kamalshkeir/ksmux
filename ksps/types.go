@@ -18,6 +18,10 @@ type Bus struct {
 	// Weak pointers pour auto-cleanup
 	subscribers map[uint64]weak.Pointer[subscriber]
 
+	// WebSocket central registry (une seule goroutine par client)
+	wsConns   map[string]*wsConnection
+	wsConnsMu sync.RWMutex
+
 	// WebSocket subscribers par topic (optimisé)
 	wsSubscribers map[unique.Handle[string]]*wsTopicData
 
@@ -45,7 +49,9 @@ type dataTopic struct {
 	_      [63]byte    // padding pour cache line alignment
 
 	// Cold path data (deuxième cache line)
+	compacting  atomic.Bool // Empêcher les tempêtes de compaction
 	eventCh     chan any
+	stopCh      chan struct{}
 	subscribers []weak.Pointer[subscriber]
 	mu          sync.RWMutex // Pour subscribers slice
 }
@@ -67,6 +73,7 @@ type wsConnection struct {
 	conn   *ws.Conn
 	topics map[unique.Handle[string]]bool // topics subscribed
 	sendCh chan wsMessage                 // buffered channel pour async send
+	stopCh chan struct{}
 	active atomic.Bool
 	mu     sync.RWMutex
 }
@@ -83,6 +90,7 @@ type wsMessage struct {
 
 // ackRequest - Requête d'acknowledgment
 type ackRequest struct {
+	remaining atomic.Int32
 	id        string
 	timestamp time.Time
 	timeout   time.Duration

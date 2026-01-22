@@ -223,7 +223,7 @@ class Client {
         client.onId = opts.OnId;
         client.onClose = opts.OnClose;
         await client.connect(opts);
-        this.client=client;
+        this.client = client;
         return client;
     }
 
@@ -238,29 +238,29 @@ class Client {
 
         try {
             this.Conn = new WebSocket(url);
-            
+
             // Promesse pour attendre la connexion
             await new Promise((resolve, reject) => {
                 this.Conn.onopen = () => {
                     this.connected = true;
                     console.log(`client connected to ${url}`);
-                    
+
                     // Démarrer les handlers
                     this.messageHandler();
                     this.messageSender();
-                    
+
                     // Ping initial pour enregistrer le client
                     this.sendMessage({
                         action: 'ping',
                         from: this.Id
                     });
-                    
+
                     resolve();
                 };
 
                 this.Conn.onerror = (error) => {
                     if (this.Autorestart) {
-                        console.log(`Connection failed, retrying in ${this.RestartEvery/1000} seconds`);
+                        console.log(`Connection failed, retrying in ${this.RestartEvery / 1000} seconds`);
                         setTimeout(() => {
                             this.connect(opts).then(resolve).catch(reject);
                         }, this.RestartEvery);
@@ -281,7 +281,7 @@ class Client {
 
         } catch (error) {
             if (this.Autorestart) {
-                console.log(`Connection failed, retrying in ${this.RestartEvery/1000} seconds`);
+                console.log(`Connection failed, retrying in ${this.RestartEvery / 1000} seconds`);
                 setTimeout(() => {
                     return this.connect(opts);
                 }, this.RestartEvery);
@@ -522,7 +522,7 @@ class Client {
     Subscribe(topic, callback) {
         if (!this.connected) {
             console.debug('Cannot subscribe: client not connected');
-            return () => {};
+            return () => { };
         }
 
         // Créer la subscription locale
@@ -705,13 +705,17 @@ class Client {
      * @param {Object} data - Données du message
      */
     handleAckResponse(data) {
-        const ackID = data.ack_id;
+        // Le payload est dans data["data"] car wsMessage met tout dedans
+        const payload = data.data;
+        if (!payload) return;
+
+        const ackID = payload.ack_id;
         if (!ackID || !this.ackRequests) return;
 
         const clientAck = this.ackRequests.get(ackID);
         if (!clientAck || clientAck.cancelled) return;
 
-        const responses = data.responses || {};
+        const responses = payload.responses || {};
         clientAck.handleResponse(responses);
     }
 
@@ -720,13 +724,17 @@ class Client {
      * @param {Object} data - Données du message
      */
     handleAckStatus(data) {
-        const ackID = data.ack_id;
+        // Le payload est dans data["data"]
+        const payload = data.data;
+        if (!payload) return;
+
+        const ackID = payload.ack_id;
         if (!ackID || !this.ackRequests) return;
 
         const clientAck = this.ackRequests.get(ackID);
         if (!clientAck || clientAck.cancelled) return;
 
-        const status = data.status || {};
+        const status = payload.status || {};
         clientAck.handleStatus(status);
     }
 
@@ -735,7 +743,11 @@ class Client {
      * @param {Object} data - Données du message
      */
     handleAckCancelled(data) {
-        const ackID = data.ack_id;
+        // Le payload est dans data["data"]
+        const payload = data.data;
+        if (!payload) return;
+
+        const ackID = payload.ack_id;
         if (!ackID || !this.ackRequests) return;
 
         // Nettoyer l'ACK local

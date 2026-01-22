@@ -13,9 +13,8 @@ import (
 )
 
 const (
-	minCompressionLevel     = -2
-	maxCompressionLevel     = flate.BestCompression
-	defaultCompressionLevel = 1
+	minCompressionLevel = -2
+	maxCompressionLevel = flate.BestCompression
 )
 
 var (

@@ -550,7 +550,10 @@ class Client:
 
     def handle_ack_response(self, data: Dict[str, Any]):
         """Traite les réponses ACK du serveur"""
-        ack_id = data.get("ack_id")
+        # Le payload est dans data["data"]
+        payload = data.get("data", {})
+        ack_id = payload.get("ack_id")
+        
         if not ack_id or ack_id not in self.ack_requests:
             return
 
@@ -558,12 +561,15 @@ class Client:
         if client_ack.cancelled:
             return
 
-        responses = data.get("responses", {})
+        responses = payload.get("responses", {})
         client_ack.handle_response(responses)
 
     def handle_ack_status(self, data: Dict[str, Any]):
         """Traite les statuts ACK du serveur"""
-        ack_id = data.get("ack_id")
+        # Le payload est dans data["data"]
+        payload = data.get("data", {})
+        ack_id = payload.get("ack_id")
+        
         if not ack_id or ack_id not in self.ack_requests:
             return
 
@@ -571,12 +577,15 @@ class Client:
         if client_ack.cancelled:
             return
 
-        status = data.get("status", {})
+        status = payload.get("status", {})
         client_ack.handle_status(status)
 
     def handle_ack_cancelled(self, data: Dict[str, Any]):
         """Traite les confirmations d'annulation ACK"""
-        ack_id = data.get("ack_id")
+        # Le payload est dans data["data"]
+        payload = data.get("data", {})
+        ack_id = payload.get("ack_id")
+        
         if ack_id and ack_id in self.ack_requests:
             del self.ack_requests[ack_id]
 
@@ -603,6 +612,7 @@ class Client:
             opts = {
                 'Id': self.Id,
                 'Address': parsed.netloc,
+                'Path': parsed.path,  # Fix: Preserve Path
                 'Secure': parsed.scheme == 'wss',
                 'Autorestart': self.Autorestart,
                 'RestartEvery': self.RestartEvery,

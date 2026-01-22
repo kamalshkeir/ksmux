@@ -32,8 +32,9 @@ type Client struct {
 	connected     atomic.Bool
 
 	// ACK system côté client
-	ackRequests map[string]*ClientAck // ackID -> ClientAck
-	nextAckID   atomic.Uint64
+	ackRequests  map[string]*ClientAck // ackID -> ClientAck
+	nextAckID    atomic.Uint64
+	reconnecting atomic.Bool // Protection contre les tempêtes
 }
 
 type clientSubscription struct {
@@ -82,14 +83,19 @@ func NewClient(opts ClientConnectOptions) (*Client, error) {
 		onClose:       opts.OnClose,
 		Done:          make(chan struct{}),
 		subscriptions: make(map[string]*clientSubscription),
-		messageQueue:  make(chan wsMessage, 1024), // Buffer pour async
+		ackRequests:   make(map[string]*ClientAck),
+		messageQueue:  make(chan wsMessage, 1024),
 	}
 	if cl.Id == "" {
 		cl.Id = ksmux.GenerateID()
 	}
 	err := cl.connect(opts)
-	if lg.CheckError(err) {
+	if err != nil && !cl.Autorestart {
 		return nil, err
+	}
+	if err != nil && cl.Autorestart {
+		// Pas d'erreur fatale si autorestart est activé, on laisse la boucle faire
+		go cl.reconnect()
 	}
 	return cl, nil
 }
@@ -109,16 +115,11 @@ func (client *Client) connect(opts ClientConnectOptions) error {
 	client.ServerAddr = u.String()
 	c, resp, err := ws.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
-		if client.Autorestart {
-			lg.Info("Connection failed, retrying in", "seconds", client.RestartEvery.Seconds())
-			time.Sleep(client.RestartEvery)
-			return client.connect(opts)
-		}
-		if err == ws.ErrBadHandshake {
+		if err == ws.ErrBadHandshake && resp != nil {
 			lg.DebugC("handshake failed with status", "status", resp.StatusCode)
 			return err
 		}
-		if err == ws.ErrCloseSent {
+		if err == ws.ErrCloseSent && resp != nil {
 			lg.DebugC("server connection closed with status", "status", resp.StatusCode)
 			return err
 		} else {
@@ -129,9 +130,12 @@ func (client *Client) connect(opts ClientConnectOptions) error {
 	client.Conn = c
 	client.connected.Store(true)
 
+	// Créer un canal stop local pour synchroniser Handler/Sender de cette session
+	stopCh := make(chan struct{})
+
 	// Démarrer les goroutines de gestion
-	go client.messageHandler()
-	go client.messageSender()
+	go client.messageHandler(stopCh)
+	go client.messageSender(stopCh)
 
 	// Ping initial pour enregistrer le client
 	client.sendMessage(wsMessage{
@@ -144,12 +148,14 @@ func (client *Client) connect(opts ClientConnectOptions) error {
 }
 
 // messageHandler - Gère les messages entrants
-func (client *Client) messageHandler() {
+func (client *Client) messageHandler(stopCh chan struct{}) {
+	defer close(stopCh) // Arrête le sender si le handler meurt
 	for {
 		select {
 		case <-client.Done:
-			return // Arrêter la goroutine
-
+			return
+		case <-stopCh:
+			return
 		default:
 			if !client.connected.Load() {
 				return
@@ -162,6 +168,8 @@ func (client *Client) messageHandler() {
 				client.connected.Store(false)
 				if client.Autorestart {
 					go client.reconnect()
+				} else if client.onClose != nil {
+					client.onClose()
 				}
 				return
 			}
@@ -173,15 +181,17 @@ func (client *Client) messageHandler() {
 }
 
 // messageSender - Gère l'envoi des messages en queue
-func (client *Client) messageSender() {
+func (client *Client) messageSender(stopCh chan struct{}) {
 	for {
 		select {
 		case <-client.Done:
-			return // Arrêter la goroutine
+			return
+		case <-stopCh:
+			return // Session terminée
 
 		case msg, ok := <-client.messageQueue:
 			if !ok {
-				return // Channel fermé
+				return
 			}
 
 			if !client.connected.Load() {
@@ -457,9 +467,6 @@ func (client *Client) PublishWithAck(topic string, data any, timeout time.Durati
 
 	// Enregistrer l'ACK localement pour recevoir les réponses
 	client.subMu.Lock()
-	if client.ackRequests == nil {
-		client.ackRequests = make(map[string]*ClientAck)
-	}
 	client.ackRequests[ackID] = clientAck
 	client.subMu.Unlock()
 
@@ -495,9 +502,6 @@ func (client *Client) PublishToIDWithAck(targetID string, data any, timeout time
 
 	// Enregistrer l'ACK localement
 	client.subMu.Lock()
-	if client.ackRequests == nil {
-		client.ackRequests = make(map[string]*ClientAck)
-	}
 	client.ackRequests[ackID] = clientAck
 	client.subMu.Unlock()
 
@@ -530,7 +534,14 @@ func (client *Client) generateAckID() string {
 
 // handleAckResponse - Traite les réponses ACK du serveur
 func (client *Client) handleAckResponse(data map[string]any) {
-	ackID, ok := data["ack_id"].(string)
+	// Le payload est dans data["data"] car wsMessage met tout dedans
+	payload, ok := data["data"].(map[string]any)
+	if !ok {
+		// Fallback ou erreur
+		return
+	}
+
+	ackID, ok := payload["ack_id"].(string)
 	if !ok {
 		return
 	}
@@ -544,7 +555,7 @@ func (client *Client) handleAckResponse(data map[string]any) {
 	}
 
 	// Extraire les réponses
-	if responsesData, ok := data["responses"].(map[string]any); ok {
+	if responsesData, ok := payload["responses"].(map[string]any); ok {
 		responses := make(map[string]ackResponse)
 		for clientID, respData := range responsesData {
 			if respMap, ok := respData.(map[string]any); ok {
@@ -571,7 +582,13 @@ func (client *Client) handleAckResponse(data map[string]any) {
 
 // handleAckStatus - Traite les statuts ACK du serveur
 func (client *Client) handleAckStatus(data map[string]any) {
-	ackID, ok := data["ack_id"].(string)
+	// Le payload est dans data["data"]
+	payload, ok := data["data"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	ackID, ok := payload["ack_id"].(string)
 	if !ok {
 		return
 	}
@@ -601,28 +618,49 @@ func (client *Client) handleAckStatus(data map[string]any) {
 	}
 }
 
-// reconnect - Reconnexion automatique
+// reconnect - Reconnexion automatique sécurisée
 func (client *Client) reconnect() {
-	if !client.Autorestart {
+	if !client.Autorestart || !client.reconnecting.CompareAndSwap(false, true) {
 		return
 	}
+	defer client.reconnecting.Store(false)
 
-	time.Sleep(client.RestartEvery)
+	for {
+		select {
+		case <-client.Done:
+			return
+		default:
+			if client.connected.Load() {
+				return
+			}
 
-	// Essayer de se reconnecter
-	opts := ClientConnectOptions{
-		Id:           client.Id,
-		Address:      client.ServerAddr,
-		Autorestart:  client.Autorestart,
-		RestartEvery: client.RestartEvery,
-		OnDataWs:     client.onDataWS,
-		OnId:         client.onId,
-		OnClose:      client.onClose,
-	}
+			time.Sleep(client.RestartEvery)
+			lg.Info("Attempting to reconnect...", "id", client.Id)
 
-	if err := client.connect(opts); err == nil {
-		// Reconnexion réussie, re-souscrire aux topics
-		client.resubscribeAll()
+			// Extraire l'adresse host et le path propres de ServerAddr
+			addr := client.ServerAddr
+			path := ""
+			if u, err := url.Parse(client.ServerAddr); err == nil {
+				addr = u.Host
+				path = u.Path
+			}
+
+			opts := ClientConnectOptions{
+				Id:           client.Id,
+				Address:      addr,
+				Path:         path,
+				Autorestart:  client.Autorestart,
+				RestartEvery: client.RestartEvery,
+				OnDataWs:     client.onDataWS,
+				OnId:         client.onId,
+				OnClose:      client.onClose,
+			}
+
+			if err := client.connect(opts); err == nil {
+				client.resubscribeAll()
+				return
+			}
+		}
 	}
 }
 
@@ -646,6 +684,9 @@ func (client *Client) resubscribeAll() {
 }
 
 func (client *Client) Close() error {
+	if client == nil {
+		return nil
+	}
 	client.connected.Store(false)
 
 	if client.onClose != nil {
@@ -653,19 +694,20 @@ func (client *Client) Close() error {
 	}
 
 	if client.Conn != nil {
-		err := client.Conn.WriteMessage(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""))
-		if err != nil {
-			return err
-		}
-		err = client.Conn.Close()
-		if err != nil {
-			return err
-		}
+		func() {
+			defer func() { recover() }()
+			_ = client.Conn.WriteMessage(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""))
+			_ = client.Conn.Close()
+		}()
 		client.Conn = nil
 	}
 
-	close(client.messageQueue)
-	close(client.Done)
+	// Signaler l'arrêt de manière idempotente
+	select {
+	case <-client.Done:
+	default:
+		close(client.Done)
+	}
 	return nil
 }
 

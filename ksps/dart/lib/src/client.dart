@@ -275,13 +275,15 @@ class KspsClient {
 
   /// Handle ACK responses
   void _handleAckResponse(Map<String, dynamic> data) {
-    final ackId = data['ack_id'] as String?;
+    // Payload is nested in data['data']
+    final payload = data['data'] as Map<String, dynamic>? ?? {};
+    final ackId = payload['ack_id'] as String?;
     if (ackId == null) return;
 
     final clientAck = _ackRequests[ackId];
     if (clientAck == null || clientAck.isCancelled) return;
 
-    final responsesData = data['responses'] as Map<String, dynamic>?;
+    final responsesData = payload['responses'] as Map<String, dynamic>?;
     if (responsesData != null) {
       final responses = <String, AckResponse>{};
       
@@ -298,13 +300,15 @@ class KspsClient {
 
   /// Handle ACK status
   void _handleAckStatus(Map<String, dynamic> data) {
-    final ackId = data['ack_id'] as String?;
+    // Payload is nested in data['data']
+    final payload = data['data'] as Map<String, dynamic>? ?? {};
+    final ackId = payload['ack_id'] as String?;
     if (ackId == null) return;
 
     final clientAck = _ackRequests[ackId];
     if (clientAck == null || clientAck.isCancelled) return;
 
-    final statusData = data['status'] as Map<String, dynamic>?;
+    final statusData = payload['status'] as Map<String, dynamic>?;
     if (statusData != null) {
       final status = <String, bool>{};
       for (final entry in statusData.entries) {
@@ -320,7 +324,9 @@ class KspsClient {
 
   /// Handle ACK cancellation
   void _handleAckCancelled(Map<String, dynamic> data) {
-    final ackId = data['ack_id'] as String?;
+    // Payload is nested in data['data']
+    final payload = data['data'] as Map<String, dynamic>? ?? {};
+    final ackId = payload['ack_id'] as String?;
     if (ackId == null) return;
 
     _ackRequests.remove(ackId);

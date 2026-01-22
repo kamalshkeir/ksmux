@@ -3,12 +3,27 @@ package ksps
 import (
 	"fmt"
 	"runtime"
+	"sync"
 	"time"
 	"unique"
 	"weak"
 
 	"github.com/kamalshkeir/ksmux/ws"
 )
+
+type writePoolData struct {
+	buf []byte
+}
+
+func init() {
+	ws.DefaultUpgraderKSMUX = ws.Upgrader{
+		EnableCompression: false, // Disable compression for lower latency (JSON is already compact)
+		ReadBufferSize:    8192,  // 8KB - optimal for most messages
+		WriteBufferSize:   8192,  // 8KB - matches read buffer
+		HandshakeTimeout:  10 * time.Second,
+		WriteBufferPool:   &sync.Pool{New: func() interface{} { return writePoolData{buf: make([]byte, 8192)} }},
+	}
+}
 
 // New - Constructeur optimisé
 func New() *Bus {
@@ -18,6 +33,7 @@ func New() *Bus {
 		topics:        make(map[unique.Handle[string]]*dataTopic),
 		subscribers:   make(map[uint64]weak.Pointer[subscriber]),
 		wsSubscribers: make(map[unique.Handle[string]]*wsTopicData),
+		wsConns:       make(map[string]*wsConnection),
 		ackRequests:   make(map[string]*ackRequest),
 		workers:       newWorkerPool(numWorkers),
 		done:          make(chan struct{}),
@@ -34,14 +50,6 @@ func (ps *Bus) Close() {
 	close(ps.done)
 	ps.closeAllWebSocketConnections()
 	ps.workers.close()
-}
-
-// close - Ferme le worker pool
-func (wp *workerPool) close() {
-	close(wp.done)
-	for i := 0; i < wp.size; i++ {
-		close(wp.workers[i])
-	}
 }
 
 // Subscribe - Souscription ultra-rapide avec weak pointers
@@ -68,7 +76,8 @@ func (ps *Bus) Subscribe(topic string, callback func(any, func())) func() {
 	topicData := ps.topics[topicHandle]
 	if topicData == nil {
 		topicData = &dataTopic{
-			eventCh:     make(chan any, 1024), // Buffer pour éviter blocking
+			eventCh:     make(chan any, 1024),
+			stopCh:      make(chan struct{}),
 			subscribers: make([]weak.Pointer[subscriber], 0, 16),
 		}
 		topicData.active.Store(true)
@@ -87,6 +96,7 @@ func (ps *Bus) Subscribe(topic string, callback func(any, func())) func() {
 
 	// Retourner fonction d'unsubscribe
 	return func() {
+		sub.active.Store(false)
 		ps.unsubscribe(sub.id)
 	}
 }
@@ -100,10 +110,32 @@ func (ps *Bus) Unsubscribe(topic string) {
 	wsTopicData := ps.wsSubscribers[topicHandle]
 
 	if topicData != nil {
-		// Marquer le topic comme inactif
-		topicData.active.Store(false)
-		// Supprimer le topic de la map
+		// Supprimer d'abord de la map pour que plus rien ne soit ajouté au channel (Lock ps.mu est déjà tenu)
 		delete(ps.topics, topicHandle)
+
+		// Nettoyer le registre global des abonnés pour ce topic (Fix RAM Leak)
+		topicData.mu.RLock()
+		subsCount := len(topicData.subscribers)
+		if subsCount > 0 {
+			// On capture les IDs
+			ids := make([]uint64, 0, subsCount)
+			for _, ws := range topicData.subscribers {
+				if s := ws.Value(); s != nil {
+					ids = append(ids, s.id)
+				}
+			}
+			topicData.mu.RUnlock()
+
+			// On retire massivement du registre global (ps.mu est DÉJÀ tenu, donc pas de Lock() supplémentaire)
+			for _, id := range ids {
+				delete(ps.subscribers, id)
+			}
+		} else {
+			topicData.mu.RUnlock()
+		}
+
+		// Signaler l'arrêt
+		close(topicData.stopCh)
 	}
 
 	if wsTopicData != nil {
@@ -113,23 +145,10 @@ func (ps *Bus) Unsubscribe(topic string) {
 	}
 	ps.mu.Unlock()
 
-	if topicData != nil {
-		// Désactiver tous les subscribers de ce topic
-		topicData.mu.Lock()
-		for _, weakSub := range topicData.subscribers {
-			if sub := weakSub.Value(); sub != nil {
-				sub.active.Store(false)
-			}
-		}
-		topicData.subscribers = topicData.subscribers[:0] // Clear slice
-		topicData.mu.Unlock()
-	}
-
 	if wsTopicData != nil {
-		// Désactiver toutes les connexions WS
+		// Retirer ce topic de toutes les connexions associées
 		wsTopicData.mu.Lock()
 		for _, wsConn := range wsTopicData.connections {
-			wsConn.active.Store(false)
 			wsConn.mu.Lock()
 			delete(wsConn.topics, topicHandle)
 			wsConn.mu.Unlock()
@@ -161,6 +180,103 @@ func (ps *Bus) Publish(topic string, data any) {
 	// Publier aux subscribers WebSocket
 	if wsTopicData != nil && wsTopicData.active.Load() {
 		ps.publishToWebSocket(topic, data, wsTopicData)
+	}
+}
+
+// Wait - Attend tous les acknowledgments avec timeout
+func (ack *Ack) Wait() map[string]ackResponse {
+	if ack.Request == nil {
+		return make(map[string]ackResponse)
+	}
+
+	responses := make(map[string]ackResponse)
+	timeout := time.After(ack.Request.timeout)
+
+	for {
+		select {
+		case resp, ok := <-ack.Request.ackCh:
+			if !ok {
+				// Channel fermé = timeout
+				return responses
+			}
+			responses[resp.ClientID] = resp
+
+			// Vérifier si tous les ACK sont reçus (Optimisation O(1))
+			if ack.Request.remaining.Load() <= 0 {
+				// Plus besoin de garder l'ID en mémoire, on libère le bus
+				ack.Bus.cancelAck(ack.ID)
+				return responses
+			}
+
+		case <-timeout:
+			// Timeout atteint
+			return responses
+		}
+	}
+}
+
+// WaitAny - Attend au moins un acknowledgment
+func (ack *Ack) WaitAny() (ackResponse, bool) {
+	if ack.Request == nil {
+		return ackResponse{}, false
+	}
+
+	timeout := time.After(ack.Request.timeout)
+
+	select {
+	case resp, ok := <-ack.Request.ackCh:
+		return resp, ok
+	case <-timeout:
+		return ackResponse{}, false
+	}
+}
+
+// GetStatus - Retourne le statut actuel des acknowledgments
+func (ack *Ack) GetStatus() map[string]bool {
+	if ack.Request == nil {
+		return make(map[string]bool)
+	}
+
+	ack.Request.mu.RLock()
+	status := make(map[string]bool, len(ack.Request.received))
+	for clientID, received := range ack.Request.received {
+		status[clientID] = received
+	}
+	ack.Request.mu.RUnlock()
+
+	return status
+}
+
+// IsComplete - Vérifie si tous les ACK sont reçus
+func (ack *Ack) IsComplete() bool {
+	if ack.Request == nil {
+		return true
+	}
+
+	ack.Request.mu.RLock()
+	defer ack.Request.mu.RUnlock()
+
+	for _, received := range ack.Request.received {
+		if !received {
+			return false
+		}
+	}
+	return true
+}
+
+// Cancel - Annule l'attente des acknowledgments
+func (ack *Ack) Cancel() {
+	if ack.Request == nil || ack.Bus == nil {
+		return
+	}
+	ack.Bus.cancelAck(ack.ID)
+}
+
+// close - Ferme le worker pool
+func (wp *workerPool) close() {
+	close(wp.done)
+	for i := 0; i < wp.size; i++ {
+		close(wp.workers[i])
 	}
 }
 
@@ -205,12 +321,11 @@ func (ps *Bus) sendToWebSocket(conn *wsConnection, msg wsMessage) {
 	}
 }
 
-// SubscribeWebSocket - Souscription WebSocket optimisée
-func (ps *Bus) SubscribeWebSocket(clientID, topic string, wsConn *ws.Conn) {
+// subscribeWebSocket - Souscription WebSocket optimisée
+func (ps *Bus) subscribeWebSocket(clientID, topic string, wsConn *ws.Conn) {
 	topicHandle := unique.Make(topic)
 
 	ps.mu.Lock()
-
 	// Obtenir ou créer wsTopicData
 	wsTopic := ps.wsSubscribers[topicHandle]
 	if wsTopic == nil {
@@ -220,37 +335,74 @@ func (ps *Bus) SubscribeWebSocket(clientID, topic string, wsConn *ws.Conn) {
 		wsTopic.active.Store(true)
 		ps.wsSubscribers[topicHandle] = wsTopic
 	}
-
 	ps.mu.Unlock()
 
-	wsTopic.mu.Lock()
+	// Enregistrer d'abord le client dans le registre global (Fix Invisible Client)
+	ps.registerWebSocket(clientID, wsConn)
 
-	// Obtenir ou créer wsConnection
-	conn := wsTopic.connections[clientID]
+	// ORDRE DE LOCK CRITIQUE : wsConnsMu AVANT wsTopic.mu
+	ps.wsConnsMu.RLock()
+	conn := ps.wsConns[clientID]
+	ps.wsConnsMu.RUnlock()
+
+	if conn == nil {
+		return // Ne devrait pas arriver après Register
+	}
+
+	wsTopic.mu.Lock()
+	wsTopic.connections[clientID] = conn
+	wsTopic.mu.Unlock()
+
+	// Enregistrer le topic dans la connexion
+	conn.mu.Lock()
+	conn.topics[topicHandle] = true
+	conn.mu.Unlock()
+}
+
+// registerWebSocket - Enregistre une connexion et retourne l'objet wsConnection (Atomicity++)
+func (ps *Bus) registerWebSocket(clientID string, wsConn *ws.Conn) *wsConnection {
+	ps.wsConnsMu.Lock()
+	defer ps.wsConnsMu.Unlock()
+
+	conn := ps.wsConns[clientID]
 	if conn == nil {
 		conn = &wsConnection{
 			id:     clientID,
 			conn:   wsConn,
 			topics: make(map[unique.Handle[string]]bool),
-			sendCh: make(chan wsMessage, 256), // Buffer pour async
+			sendCh: make(chan wsMessage, 1024),
+			stopCh: make(chan struct{}),
 		}
 		conn.active.Store(true)
-		wsTopic.connections[clientID] = conn
-
-		// Démarrer le sender pour cette connexion
+		ps.wsConns[clientID] = conn
 		go ps.wsConnectionSender(conn)
+	} else if conn.conn != wsConn {
+		// Reconnexion éclair
+		conn.mu.Lock()
+		oldSocket := conn.conn
+		conn.conn = wsConn
+		if !conn.active.Load() {
+			conn.active.Store(true)
+			conn.sendCh = make(chan wsMessage, 1024)
+			conn.stopCh = make(chan struct{})
+			go ps.wsConnectionSender(conn)
+		}
+		conn.mu.Unlock()
+		if oldSocket != nil {
+			// Fermeture asynchrone sécurisée
+			go func(s *ws.Conn) {
+				defer func() { recover() }()
+				if s != nil {
+					_ = s.Close()
+				}
+			}(oldSocket)
+		}
 	}
-
-	// Ajouter le topic à cette connexion
-	conn.mu.Lock()
-	conn.topics[topicHandle] = true
-	conn.mu.Unlock()
-
-	wsTopic.mu.Unlock()
+	return conn
 }
 
-// UnsubscribeWebSocket - Désabonnement WebSocket
-func (ps *Bus) UnsubscribeWebSocket(clientID, topic string) {
+// unsubscribeWebSocket - Désabonnement WebSocket optimisé (O(1)) et sans deadlock
+func (ps *Bus) unsubscribeWebSocket(clientID, topic string) {
 	topicHandle := unique.Make(topic)
 
 	ps.mu.RLock()
@@ -261,69 +413,159 @@ func (ps *Bus) UnsubscribeWebSocket(clientID, topic string) {
 		return
 	}
 
-	wsTopicData.mu.Lock()
-	if conn := wsTopicData.connections[clientID]; conn != nil {
+	// 1. Enlever le topic de la connexion du client
+	ps.wsConnsMu.RLock()
+	conn := ps.wsConns[clientID]
+	ps.wsConnsMu.RUnlock()
+
+	if conn != nil {
 		conn.mu.Lock()
 		delete(conn.topics, topicHandle)
 		conn.mu.Unlock()
-
-		// Si plus de topics, supprimer la connexion
-		conn.mu.RLock()
-		hasTopics := len(conn.topics) > 0
-		conn.mu.RUnlock()
-
-		if !hasTopics {
-			conn.active.Store(false)
-			delete(wsTopicData.connections, clientID)
-		}
 	}
+
+	// 2. Enlever le client du topic
+	wsTopicData.mu.Lock()
+	delete(wsTopicData.connections, clientID)
+	isEmpty := len(wsTopicData.connections) == 0
 	wsTopicData.mu.Unlock()
+
+	// 3. Si le topic est vide, on le supprime (Locking order correct)
+	if isEmpty {
+		ps.mu.Lock()
+		// Re-vérifier après avoir pris le lock
+		if wsTopic, ok := ps.wsSubscribers[topicHandle]; ok {
+			wsTopic.mu.RLock()
+			if len(wsTopic.connections) == 0 {
+				wsTopic.active.Store(false)
+				delete(ps.wsSubscribers, topicHandle)
+			}
+			wsTopic.mu.RUnlock()
+		}
+		ps.mu.Unlock()
+	}
 }
 
-// wsConnectionSender - Goroutine qui gère l'envoi pour une connexion WS
+// wsConnectionSender - Drain final avant fermeture
 func (ps *Bus) wsConnectionSender(conn *wsConnection) {
+	defer func() {
+		// DRAINAGE FINAL : envoyer les messages restants dans le buffer
+		ticker := time.NewTicker(1000 * time.Millisecond) // Max 1s pour vider le buffer
+		defer ticker.Stop()
+	loop:
+		for {
+			select {
+			case msg, ok := <-conn.sendCh:
+				if !ok {
+					break loop
+				}
+				ps.internalSendMessage(conn, msg)
+			case <-ticker.C:
+				break loop
+			default:
+				break loop
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ps.done:
-			return // Arrêter la goroutine
-
+			return
+		case <-conn.stopCh:
+			return
 		case msg, ok := <-conn.sendCh:
 			if !ok {
-				return // Channel fermé
-			}
-
-			if !conn.active.Load() {
 				return
 			}
-
-			// Envoi avec timeout pour éviter les blocages
-			if err := conn.conn.WriteJSON(msg); err != nil {
-				// Connexion fermée, marquer comme inactive
-				conn.active.Store(false)
-				return
-			}
+			ps.internalSendMessage(conn, msg)
 		}
 	}
 }
 
-// processTopicEvents - Traite les événements d'un topic en batch
+func (ps *Bus) internalSendMessage(conn *wsConnection, msg wsMessage) {
+	defer func() { recover() }() // Protection contre socket corrompue/mockée sans deadlines
+
+	conn.mu.RLock()
+	socket := conn.conn
+	conn.mu.RUnlock()
+
+	if socket == nil {
+		return
+	}
+
+	socket.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := socket.WriteJSON(msg); err != nil {
+		conn.mu.RLock()
+		isSameSocket := conn.conn == socket
+		conn.mu.RUnlock()
+
+		if isSameSocket {
+			go ps.cleanupWebSocketClient(conn.id, socket)
+		}
+	}
+}
+
+// processTopicEvents - Drainage final garanti
 func (ps *Bus) processTopicEvents(topicData *dataTopic) {
-	events := make([]any, 0, 32) // Batch size optimisé
+	events := make([]any, 0, 32)
+
+	closeOnce := sync.Once{}
+	stopProcessor := func() {
+		closeOnce.Do(func() {
+			// Capturer les derniers abonnés AVANT qu'ils ne soient potentiellement vidés
+			topicData.mu.RLock()
+			lastSubscribers := make([]weak.Pointer[subscriber], len(topicData.subscribers))
+			copy(lastSubscribers, topicData.subscribers)
+			topicData.mu.RUnlock()
+
+			topicData.active.Store(false)
+			// Drainage final synchrone avec les derniers abonnés connus
+			for {
+				select {
+				case event, ok := <-topicData.eventCh:
+					if !ok {
+						return
+					}
+					ps.dispatchBatchWithSubs(topicData, []any{event}, lastSubscribers)
+				default:
+					return
+				}
+			}
+		})
+	}
+	defer stopProcessor()
 
 	for {
 		select {
 		case <-ps.done:
-			return // Arrêter la goroutine
+			if len(events) > 0 {
+				ps.dispatchBatch(topicData, events)
+			}
+			return
+		case <-topicData.stopCh:
+			if len(events) > 0 {
+				ps.dispatchBatch(topicData, events)
+			}
+			return
 
-		case event := <-topicData.eventCh:
+		case event, ok := <-topicData.eventCh:
+			if !ok {
+				return
+			}
 			events = append(events, event)
 
 			// Drain le channel jusqu'à la taille du batch
 			for len(events) < cap(events) {
 				select {
 				case <-ps.done:
-					return // Arrêter la goroutine
-				case e := <-topicData.eventCh:
+					goto process
+				case <-topicData.stopCh:
+					goto process
+				case e, ok := <-topicData.eventCh:
+					if !ok {
+						goto process
+					}
 					events = append(events, e)
 				default:
 					goto process
@@ -332,29 +574,70 @@ func (ps *Bus) processTopicEvents(topicData *dataTopic) {
 
 		process:
 			ps.dispatchBatch(topicData, events)
-			events = events[:0] // Reset slice, garde la capacity
+			events = events[:0]
 		}
 	}
 }
 
-// dispatchBatch - Dispatch un batch d'événements
+// dispatchBatch - Dispatch standard (utilise les abonnés actuels)
 func (ps *Bus) dispatchBatch(topicData *dataTopic, events []any) {
 	topicData.mu.RLock()
 	subscribers := make([]weak.Pointer[subscriber], len(topicData.subscribers))
 	copy(subscribers, topicData.subscribers)
 	topicData.mu.RUnlock()
 
-	// Dispatch chaque événement à tous les subscribers
+	ps.dispatchBatchWithSubs(topicData, events, subscribers)
+}
+
+// dispatchBatchWithSubs - Dispatch avec une liste d'abonnés spécifique (utilisé pour drainage)
+func (ps *Bus) dispatchBatchWithSubs(topicData *dataTopic, events []any, subscribers []weak.Pointer[subscriber]) {
+	if len(subscribers) == 0 {
+		return
+	}
+
+	var activeCount int
 	for _, event := range events {
 		for _, weakSub := range subscribers {
 			if sub := weakSub.Value(); sub != nil && sub.active.Load() {
-				// Utiliser le worker pool pour paralléliser
+				if activeCount == 0 {
+					activeCount++
+				}
 				ps.workers.submit(func() {
 					ps.executeCallback(sub, event)
 				})
 			}
 		}
 	}
+
+	if len(subscribers) > 64 {
+		realActive := 0
+		for _, ws := range subscribers {
+			if s := ws.Value(); s != nil && s.active.Load() {
+				realActive++
+			}
+		}
+		if realActive < len(subscribers)/2 {
+			if topicData.compacting.CompareAndSwap(false, true) {
+				go ps.compactSubscribers(topicData)
+			}
+		}
+	}
+}
+
+// compactSubscribers - Supprime les weak pointers morts de la slice du topic
+func (ps *Bus) compactSubscribers(topicData *dataTopic) {
+	defer topicData.compacting.Store(false)
+
+	topicData.mu.Lock()
+	defer topicData.mu.Unlock()
+
+	newSubs := make([]weak.Pointer[subscriber], 0, len(topicData.subscribers))
+	for _, ws := range topicData.subscribers {
+		if s := ws.Value(); s != nil && s.active.Load() {
+			newSubs = append(newSubs, ws)
+		}
+	}
+	topicData.subscribers = newSubs
 }
 
 // executeCallback - Exécute le callback pour un subscriber
@@ -363,20 +646,68 @@ func (ps *Bus) executeCallback(sub *subscriber, data any) {
 		return
 	}
 
-	// Créer la fonction d'unsubscribe
+	// Créer la fonction d'unsubscribe (Correctif de fuite mémoire)
 	unsubFn := func() {
 		sub.active.Store(false)
+		ps.unsubscribe(sub.id)
 	}
 
 	// Exécuter le callback
 	sub.callback(data, unsubFn)
 }
 
-// unsubscribe - Désabonnement optimisé
+// unsubscribe - Désabonnement optimisé avec Auto-Cleanup de Topic
 func (ps *Bus) unsubscribe(id uint64) {
 	ps.mu.Lock()
+	sub, ok := ps.subscribers[id]
+	if !ok {
+		ps.mu.Unlock()
+		return
+	}
+
+	// Récupérer le topic avant de supprimer l'ID
+	var topicHandle unique.Handle[string]
+	if s := sub.Value(); s != nil {
+		topicHandle = s.topic
+	}
+
 	delete(ps.subscribers, id)
 	ps.mu.Unlock()
+
+	// Auto-cleanup du topic si nécessaire
+	if topicHandle != (unique.Handle[string]{}) {
+		ps.checkTopicEmpty(topicHandle)
+	}
+}
+
+// checkTopicEmpty - Vérifie et nettoie un topic s'il n'a plus d'abonnés
+func (ps *Bus) checkTopicEmpty(topicHandle unique.Handle[string]) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	// 1. Vérifier les abonnés internes
+	topicData := ps.topics[topicHandle]
+	if topicData != nil {
+		topicData.mu.RLock()
+		activeCount := 0
+		for _, ws := range topicData.subscribers {
+			if s := ws.Value(); s != nil && s.active.Load() {
+				activeCount++
+				break
+			}
+		}
+		topicData.mu.RUnlock()
+
+		if activeCount == 0 {
+			// 2. Vérifier les abonnés WebSocket
+			wsTopic := ps.wsSubscribers[topicHandle]
+			if wsTopic == nil || !wsTopic.active.Load() {
+				// Plus personne du tout ! Autodestruction.
+				delete(ps.topics, topicHandle)
+				close(topicData.stopCh)
+			}
+		}
+	}
 }
 
 // newWorkerPool - Crée un pool de workers avec work stealing
@@ -407,13 +738,28 @@ func (wp *workerPool) worker(id int) {
 			if !ok {
 				return // Channel fermé
 			}
-			fn()
+			// Sécuriser l'exécution des fonctions (panics)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Printf("⚠️ Worker %d recovered from panic: %v\n", id, r)
+					}
+				}()
+				fn()
+			}()
 		}
 	}
 }
 
-// submit - Soumet une tâche au pool avec work stealing
+// submit - Soumet une tâche au pool avec work stealing et sécurité shutdown
 func (wp *workerPool) submit(fn func()) {
+	// Vérifier si le pool est en vie
+	select {
+	case <-wp.done:
+		return // Rejeter la tâche si on ferme
+	default:
+	}
+
 	// Round-robin avec atomic pour distribution équitable
 	idx := wp.next.Add(1) % uint64(wp.size)
 
@@ -429,51 +775,84 @@ func (wp *workerPool) submit(fn func()) {
 			default:
 			}
 		}
-		// Fallback: exécuter dans une nouvelle goroutine
-		go fn()
+		// Fallback: exécuter dans une nouvelle goroutine uniquement si peu de goroutines sont en cours
+		// Sinon on attend un petit peu ou on exécute de manière synchrone (backpressure)
+		if runtime.NumGoroutine() < 10000 {
+			go fn()
+		} else {
+			// Backpressure : exécution synchrone par le thread appelant si trop de charge
+			fn()
+		}
 	}
 }
 
-// CleanupWebSocketClient - Nettoie toutes les souscriptions d'un client WebSocket
-func (ps *Bus) CleanupWebSocketClient(clientID string) {
-	ps.mu.RLock()
-	// Copier toutes les wsTopicData pour éviter de tenir le lock trop longtemps
-	topicsToClean := make(map[unique.Handle[string]]*wsTopicData)
-	for topicHandle, wsTopicData := range ps.wsSubscribers {
-		topicsToClean[topicHandle] = wsTopicData
+// cleanupWebSocketClient - Nettoie proprement une connexion spécifique (Évite les race-conditions de reconnexion)
+func (ps *Bus) cleanupWebSocketClient(clientID string, socket *ws.Conn) {
+	ps.wsConnsMu.Lock()
+	conn, exists := ps.wsConns[clientID]
+	// On ne nettoie QUE si c'est bien la même socket qui a généré l'erreur
+	var isSameSocket bool
+	if exists {
+		conn.mu.RLock()
+		isSameSocket = (socket == nil || conn.conn == socket)
+		conn.mu.RUnlock()
 	}
-	ps.mu.RUnlock()
 
-	// Nettoyer chaque topic
-	for topicHandle, wsTopicData := range topicsToClean {
-		if wsTopicData == nil || !wsTopicData.active.Load() {
-			continue
+	if exists && isSameSocket {
+		conn.active.Store(false)
+		if conn.stopCh != nil {
+			select {
+			case <-conn.stopCh:
+			default:
+				close(conn.stopCh)
+			}
 		}
+		delete(ps.wsConns, clientID)
+	} else {
+		ps.wsConnsMu.Unlock()
+		return
+	}
+	ps.wsConnsMu.Unlock()
 
-		wsTopicData.mu.Lock()
-		if conn := wsTopicData.connections[clientID]; conn != nil {
-			// Marquer la connexion comme inactive
-			conn.active.Store(false)
+	if !exists {
+		return
+	}
 
-			// Supprimer de tous les topics de cette connexion
-			conn.mu.Lock()
-			conn.topics = make(map[unique.Handle[string]]bool) // Clear all topics
-			conn.mu.Unlock()
+	// Nettoyage des références dans les topics (O(K) au lieu de O(N))
+	// On ne parcourt que les topics auxquels le client était VRAIMENT abonné
+	conn.mu.RLock()
+	clientTopics := make([]unique.Handle[string], 0, len(conn.topics))
+	for t := range conn.topics {
+		clientTopics = append(clientTopics, t)
+	}
+	conn.mu.RUnlock()
 
-			// Supprimer la connexion de ce topic
+	for _, topicHandle := range clientTopics {
+		ps.mu.RLock()
+		wsTopicData := ps.wsSubscribers[topicHandle]
+		ps.mu.RUnlock()
+
+		if wsTopicData != nil {
+			wsTopicData.mu.Lock()
 			delete(wsTopicData.connections, clientID)
+			isEmpty := len(wsTopicData.connections) == 0
+			wsTopicData.mu.Unlock()
 
-			// Si plus de connexions, marquer le topic comme inactif
-			if len(wsTopicData.connections) == 0 {
-				wsTopicData.active.Store(false)
-
-				// Supprimer le topic de la map principale
+			// Nettoyage du topic vide (Anti-Deadlock: on a relâché le lock topic avant de prendre ps.mu)
+			if isEmpty {
 				ps.mu.Lock()
-				delete(ps.wsSubscribers, topicHandle)
+				// Double-check sous lock global
+				if wsTopic, ok := ps.wsSubscribers[topicHandle]; ok {
+					wsTopic.mu.Lock() // Re-lock safe car on a ps.mu
+					if len(wsTopic.connections) == 0 {
+						wsTopic.active.Store(false)
+						delete(ps.wsSubscribers, topicHandle)
+					}
+					wsTopic.mu.Unlock()
+				}
 				ps.mu.Unlock()
 			}
 		}
-		wsTopicData.mu.Unlock()
 	}
 }
 
@@ -499,6 +878,7 @@ func (ps *Bus) PublishWithAck(topic string, data any, timeout time.Duration) *Ac
 
 	if wsTopicData != nil && wsTopicData.active.Load() {
 		wsTopicData.mu.RLock()
+		ackReq.remaining.Store(int32(len(wsTopicData.connections)))
 		for clientID := range wsTopicData.connections {
 			ackReq.clientIDs = append(ackReq.clientIDs, clientID)
 			ackReq.received[clientID] = false
@@ -572,8 +952,8 @@ func (ps *Bus) publishToWebSocketWithAck(topic string, data any, ackID string, w
 	}
 }
 
-// HandleAck - Traite un acknowledgment reçu
-func (ps *Bus) HandleAck(ackResp ackResponse) {
+// handleAck - Traite un acknowledgment reçu
+func (ps *Bus) handleAck(ackResp ackResponse) {
 	ps.ackMu.RLock()
 	ackReq := ps.ackRequests[ackResp.AckID]
 	ps.ackMu.RUnlock()
@@ -583,15 +963,21 @@ func (ps *Bus) HandleAck(ackResp ackResponse) {
 	}
 
 	ackReq.mu.Lock()
-	ackReq.received[ackResp.ClientID] = true
+	if !ackReq.received[ackResp.ClientID] {
+		ackReq.received[ackResp.ClientID] = true
+		ackReq.remaining.Add(-1)
+	}
 	ackReq.mu.Unlock()
 
-	// Envoyer la réponse dans le channel
-	select {
-	case ackReq.ackCh <- ackResp:
-	default:
-		// Channel plein, on drop
-	}
+	// Envoyer la réponse dans le channel de manière sécurisée (contre channel fermé)
+	func() {
+		defer func() { recover() }()
+		select {
+		case ackReq.ackCh <- ackResp:
+		default:
+			// Channel plein, on drop
+		}
+	}()
 }
 
 // generateAckID - Génère un ID unique pour ACK
@@ -615,8 +1001,8 @@ func (ps *Bus) ackCleanupWorker() {
 
 			for ackID, ackReq := range ps.ackRequests {
 				if now.Sub(ackReq.timestamp) > ackReq.timeout {
-					close(ackReq.ackCh)
 					delete(ps.ackRequests, ackID)
+					close(ackReq.ackCh)
 				}
 			}
 
@@ -625,123 +1011,30 @@ func (ps *Bus) ackCleanupWorker() {
 	}
 }
 
-// Wait - Attend tous les acknowledgments avec timeout
-func (ack *Ack) Wait() map[string]ackResponse {
-	if ack.Request == nil {
-		return make(map[string]ackResponse)
+// cancelAck - Annule un ACK par son ID de manière sécurisée
+func (ps *Bus) cancelAck(ackID string) {
+	ps.ackMu.Lock()
+	if ackReq, ok := ps.ackRequests[ackID]; ok {
+		delete(ps.ackRequests, ackID)
+		close(ackReq.ackCh)
 	}
-
-	responses := make(map[string]ackResponse)
-	timeout := time.After(ack.Request.timeout)
-
-	for {
-		select {
-		case resp, ok := <-ack.Request.ackCh:
-			if !ok {
-				// Channel fermé = timeout
-				return responses
-			}
-			responses[resp.ClientID] = resp
-
-			// Vérifier si tous les ACK sont reçus
-			ack.Request.mu.RLock()
-			allReceived := true
-			for _, received := range ack.Request.received {
-				if !received {
-					allReceived = false
-					break
-				}
-			}
-			ack.Request.mu.RUnlock()
-
-			if allReceived {
-				return responses
-			}
-
-		case <-timeout:
-			// Timeout atteint
-			return responses
-		}
-	}
+	ps.ackMu.Unlock()
 }
 
-// WaitAny - Attend au moins un acknowledgment
-func (ack *Ack) WaitAny() (ackResponse, bool) {
-	if ack.Request == nil {
-		return ackResponse{}, false
-	}
-
-	timeout := time.After(ack.Request.timeout)
-
-	select {
-	case resp, ok := <-ack.Request.ackCh:
-		return resp, ok
-	case <-timeout:
-		return ackResponse{}, false
-	}
-}
-
-// GetStatus - Retourne le statut actuel des acknowledgments
-func (ack *Ack) GetStatus() map[string]bool {
-	if ack.Request == nil {
-		return make(map[string]bool)
-	}
-
-	ack.Request.mu.RLock()
-	status := make(map[string]bool, len(ack.Request.received))
-	for clientID, received := range ack.Request.received {
-		status[clientID] = received
-	}
-	ack.Request.mu.RUnlock()
-
-	return status
-}
-
-// IsComplete - Vérifie si tous les ACK sont reçus
-func (ack *Ack) IsComplete() bool {
-	if ack.Request == nil {
-		return true
-	}
-
-	ack.Request.mu.RLock()
-	defer ack.Request.mu.RUnlock()
-
-	for _, received := range ack.Request.received {
-		if !received {
-			return false
-		}
-	}
-	return true
-}
-
-// Cancel - Annule l'attente des acknowledgments
-func (ack *Ack) Cancel() {
-	if ack.Request == nil || ack.Bus == nil {
-		return
-	}
-
-	ack.Bus.ackMu.Lock()
-	delete(ack.Bus.ackRequests, ack.ID)
-	ack.Bus.ackMu.Unlock()
-
-	close(ack.Request.ackCh)
-}
-
-// closeAllWebSocketConnections - Ferme toutes les connexions WebSocket
+// closeAllWebSocketConnections - Ferme toutes les connexions WebSocket et leurs goroutines
 func (ps *Bus) closeAllWebSocketConnections() {
-	ps.mu.RLock()
-	wsTopics := make([]*wsTopicData, 0, len(ps.wsSubscribers))
-	for _, wsTopicData := range ps.wsSubscribers {
-		wsTopics = append(wsTopics, wsTopicData)
-	}
-	ps.mu.RUnlock()
+	ps.wsConnsMu.Lock()
+	defer ps.wsConnsMu.Unlock()
 
-	for _, wsTopicData := range wsTopics {
-		wsTopicData.mu.Lock()
-		for _, conn := range wsTopicData.connections {
-			conn.active.Store(false)
-			close(conn.sendCh)
+	for clientID, conn := range ps.wsConns {
+		conn.active.Store(false)
+		if conn.stopCh != nil {
+			select {
+			case <-conn.stopCh:
+			default:
+				close(conn.stopCh)
+			}
 		}
-		wsTopicData.mu.Unlock()
+		delete(ps.wsConns, clientID)
 	}
 }
