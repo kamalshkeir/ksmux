@@ -550,9 +550,8 @@ class Client:
 
     def handle_ack_response(self, data: Dict[str, Any]):
         """Traite les réponses ACK du serveur"""
-        # Le payload est dans data["data"]
-        payload = data.get("data", {})
-        ack_id = payload.get("ack_id")
+        # Support optimized protocol (flat) or legacy (nested in data)
+        ack_id = data.get("ack_id") or data.get("data", {}).get("ack_id")
         
         if not ack_id or ack_id not in self.ack_requests:
             return
@@ -561,14 +560,12 @@ class Client:
         if client_ack.cancelled:
             return
 
-        responses = payload.get("responses", {})
+        responses = data.get("responses") or data.get("data", {}).get("responses", {})
         client_ack.handle_response(responses)
 
     def handle_ack_status(self, data: Dict[str, Any]):
         """Traite les statuts ACK du serveur"""
-        # Le payload est dans data["data"]
-        payload = data.get("data", {})
-        ack_id = payload.get("ack_id")
+        ack_id = data.get("ack_id") or data.get("data", {}).get("ack_id")
         
         if not ack_id or ack_id not in self.ack_requests:
             return
@@ -577,14 +574,12 @@ class Client:
         if client_ack.cancelled:
             return
 
-        status = payload.get("status", {})
+        status = data.get("status") or data.get("data", {}).get("status", {})
         client_ack.handle_status(status)
 
     def handle_ack_cancelled(self, data: Dict[str, Any]):
         """Traite les confirmations d'annulation ACK"""
-        # Le payload est dans data["data"]
-        payload = data.get("data", {})
-        ack_id = payload.get("ack_id")
+        ack_id = data.get("ack_id") or data.get("data", {}).get("ack_id")
         
         if ack_id and ack_id in self.ack_requests:
             del self.ack_requests[ack_id]

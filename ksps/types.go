@@ -72,20 +72,24 @@ type wsConnection struct {
 	id     string
 	conn   *ws.Conn
 	topics map[unique.Handle[string]]bool // topics subscribed
-	sendCh chan wsMessage                 // buffered channel pour async send
+	sendCh chan WsMessage                 // buffered channel pour async send
 	stopCh chan struct{}
 	active atomic.Bool
 	mu     sync.RWMutex
 }
 
-// wsMessage - Message WebSocket optimisé
-type wsMessage struct {
-	Action string `json:"action"`
-	Topic  string `json:"topic,omitempty"`
-	Data   any    `json:"data,omitempty"`
-	From   string `json:"from,omitempty"`
-	To     string `json:"to,omitempty"`
-	AckID  string `json:"ack_id,omitempty"`
+// WsMessage - Message WebSocket optimisé
+type WsMessage struct {
+	Action    string                 `json:"action"`
+	Topic     string                 `json:"topic,omitempty"`
+	Data      any                    `json:"data,omitempty"`
+	From      string                 `json:"from,omitempty"`
+	To        string                 `json:"to,omitempty"`
+	ID        string                 `json:"id,omitempty"`    // Pour compatibilité pong/ID
+	Error     string                 `json:"error,omitempty"` // Pour compatibilité messages d'erreur
+	AckID     string                 `json:"ack_id,omitempty"`
+	Status    map[string]bool        `json:"status,omitempty"`
+	Responses map[string]ackResponse `json:"responses,omitempty"`
 }
 
 // ackRequest - Requête d'acknowledgment

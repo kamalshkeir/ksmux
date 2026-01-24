@@ -275,15 +275,15 @@ class KspsClient {
 
   /// Handle ACK responses
   void _handleAckResponse(Map<String, dynamic> data) {
-    // Payload is nested in data['data']
-    final payload = data['data'] as Map<String, dynamic>? ?? {};
-    final ackId = payload['ack_id'] as String?;
+    // Support optimized protocol (flat) or legacy (nested in data)
+    final ackId = data['ack_id'] as String? ?? (data['data'] is Map ? data['data']['ack_id'] as String? : null);
     if (ackId == null) return;
 
     final clientAck = _ackRequests[ackId];
     if (clientAck == null || clientAck.isCancelled) return;
 
-    final responsesData = payload['responses'] as Map<String, dynamic>?;
+    final responsesData = data['responses'] as Map<String, dynamic>? ?? 
+                         (data['data'] is Map ? data['data']['responses'] as Map<String, dynamic>? : null);
     if (responsesData != null) {
       final responses = <String, AckResponse>{};
       
@@ -300,15 +300,14 @@ class KspsClient {
 
   /// Handle ACK status
   void _handleAckStatus(Map<String, dynamic> data) {
-    // Payload is nested in data['data']
-    final payload = data['data'] as Map<String, dynamic>? ?? {};
-    final ackId = payload['ack_id'] as String?;
+    final ackId = data['ack_id'] as String? ?? (data['data'] is Map ? data['data']['ack_id'] as String? : null);
     if (ackId == null) return;
 
     final clientAck = _ackRequests[ackId];
     if (clientAck == null || clientAck.isCancelled) return;
 
-    final statusData = payload['status'] as Map<String, dynamic>?;
+    final statusData = data['status'] as Map<String, dynamic>? ?? 
+                      (data['data'] is Map ? data['data']['status'] as Map<String, dynamic>? : null);
     if (statusData != null) {
       final status = <String, bool>{};
       for (final entry in statusData.entries) {
@@ -324,9 +323,7 @@ class KspsClient {
 
   /// Handle ACK cancellation
   void _handleAckCancelled(Map<String, dynamic> data) {
-    // Payload is nested in data['data']
-    final payload = data['data'] as Map<String, dynamic>? ?? {};
-    final ackId = payload['ack_id'] as String?;
+    final ackId = data['ack_id'] as String? ?? (data['data'] is Map ? data['data']['ack_id'] as String? : null);
     if (ackId == null) return;
 
     _ackRequests.remove(ackId);

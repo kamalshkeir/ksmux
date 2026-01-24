@@ -18,8 +18,8 @@ type ServerBus struct {
 	Bus          *Bus
 	WsMidws      []func(ksmux.Handler) ksmux.Handler
 	onUpgradeWS  func(r *http.Request) bool
-	onId         func(data any)
-	onServerData []func(data any, conn *ws.Conn)
+	onId         func(data WsMessage)
+	onServerData []func(data WsMessage, conn *ws.Conn)
 	router       *ksmux.Router
 
 	// WebSocket connections management
@@ -48,7 +48,7 @@ func NewServer(config ...ksmux.Config) *ServerBus {
 		onUpgradeWS: func(r *http.Request) bool {
 			return true
 		},
-		onServerData: make([]func(data any, conn *ws.Conn), 0),
+		onServerData: make([]func(data WsMessage, conn *ws.Conn), 0),
 	}
 }
 
@@ -64,11 +64,11 @@ func (sb *ServerBus) OnUpgradeWS(fn func(r *http.Request) bool) {
 	sb.onUpgradeWS = fn
 }
 
-func (sb *ServerBus) OnID(fn func(data any)) {
+func (sb *ServerBus) OnID(fn func(data WsMessage)) {
 	sb.onId = fn
 }
 
-func (sb *ServerBus) OnServerData(fn func(data any, conn *ws.Conn)) {
+func (sb *ServerBus) OnServerData(fn func(data WsMessage, conn *ws.Conn)) {
 	sb.onServerData = append(sb.onServerData, fn)
 }
 
@@ -94,7 +94,7 @@ func (sb *ServerBus) PublishToID(clientID string, data any) {
 	sb.Bus.wsConnsMu.RUnlock()
 
 	if wsConn != nil {
-		sb.Bus.sendToWebSocket(wsConn, wsMessage{
+		sb.Bus.sendToWebSocket(wsConn, WsMessage{
 			Action: "direct_message",
 			Data:   data,
 			From:   sb.ID,
@@ -261,7 +261,7 @@ func (sb *ServerBus) handlerBusWs() ksmux.Handler {
 		}()
 
 		for {
-			var m map[string]any
+			var m WsMessage
 			err := conn.ReadJSON(&m)
 			if err != nil {
 				lg.DebugC("WebSocket read error:", "error", err.Error())
@@ -280,14 +280,13 @@ func (sb *ServerBus) handlerBusWs() ksmux.Handler {
 }
 
 // handleBusActions - Gère les actions du bus WebSocket
-func (sb *ServerBus) handleBusActions(data map[string]any, conn *ws.Conn, clientID *string) {
-	action, ok := data["action"].(string)
-	if !ok {
+func (sb *ServerBus) handleBusActions(data WsMessage, conn *ws.Conn, clientID *string) {
+	if data.Action == "" {
 		sb.sendError(conn, *clientID, "missing or invalid action")
 		return
 	}
 
-	switch action {
+	switch data.Action {
 	case "ping":
 		sb.handlePing(data, conn, clientID)
 
@@ -322,14 +321,14 @@ func (sb *ServerBus) handleBusActions(data map[string]any, conn *ws.Conn, client
 		sb.handleCancelAck(data, conn, *clientID)
 
 	default:
-		sb.sendError(conn, *clientID, "unknown action: "+action)
+		sb.sendError(conn, *clientID, "unknown action: "+data.Action)
 	}
 }
 
 // handlePing - Gère l'enregistrement du client
-func (sb *ServerBus) handlePing(data map[string]any, conn *ws.Conn, clientID *string) {
-	from, ok := data["from"].(string)
-	if !ok || from == "" {
+func (sb *ServerBus) handlePing(data WsMessage, conn *ws.Conn, clientID *string) {
+	from := data.From
+	if from == "" {
 		from = ksmux.GenerateID()
 	}
 
@@ -348,91 +347,95 @@ func (sb *ServerBus) handlePing(data map[string]any, conn *ws.Conn, clientID *st
 	sb.connMu.Unlock()
 
 	// Répondre avec l'ID confirmé
-	sb.sendResponse(conn, *clientID, map[string]any{
-		"action": "pong",
-		"id":     *clientID,
+	sb.sendResponse(conn, *clientID, WsMessage{
+		Action: "pong",
+		ID:     *clientID,
 	})
 }
 
 // handleDirectMessage - Gère les messages directs vers un ID
-func (sb *ServerBus) handleDirectMessage(data map[string]any, conn *ws.Conn, clientID string) {
+func (sb *ServerBus) handleDirectMessage(data WsMessage, conn *ws.Conn, clientID string) {
 	if clientID == "" {
 		sb.sendError(conn, clientID, "client not registered")
 		return
 	}
 
-	targetID, ok := data["to"].(string)
-	if !ok || targetID == "" {
+	if data.To == "" {
 		sb.sendError(conn, clientID, "missing target ID")
 		return
 	}
 
-	payload := data["data"]
-
 	// Si le message est pour le serveur
-	if targetID == sb.ID || targetID == "server" {
+	if data.To == sb.ID || data.To == "server" {
 		if sb.onId != nil {
-			sb.onId(payload)
+			sb.onId(data)
 		}
 		return
 	}
 
 	// Sinon, transférer vers le client cible
-	sb.PublishToID(targetID, payload)
+	sb.PublishToID(data.To, data.Data)
 }
 
 // handlePublishToServer - Gère les demandes de publication vers un serveur distant
-func (sb *ServerBus) handlePublishToServer(data map[string]any, conn *ws.Conn, clientID string) {
+func (sb *ServerBus) handlePublishToServer(data WsMessage, conn *ws.Conn, clientID string) {
 	if clientID == "" {
 		sb.sendError(conn, clientID, "client not registered")
 		return
 	}
 
-	targetAddr, ok := data["to"].(string)
-	if !ok || targetAddr == "" {
+	if data.To == "" {
 		sb.sendError(conn, clientID, "missing target server address")
 		return
 	}
 
-	payload := data["data"]
-	fromClient := data["from"].(string)
-
 	// Relayer vers le serveur distant avec fromServer
-	err := sb.PublishToServerWithFrom(targetAddr, payload, fromClient)
+	err := sb.PublishToServerWithFrom(data.To, data.Data, data.From)
 	if err != nil {
 		sb.sendError(conn, clientID, "failed to relay to server: "+err.Error())
 		return
 	}
 
 	// Confirmer l'envoi
-	sb.sendResponse(conn, clientID, map[string]any{
-		"action": "server_message_sent",
-		"to":     targetAddr,
+	sb.sendResponse(conn, clientID, WsMessage{
+		Action: "server_message_sent",
+		To:     data.To,
 	})
 }
 
 // handleAck - Gère les acknowledgments reçus
-func (sb *ServerBus) handleAck(data map[string]any, conn *ws.Conn, clientID string) {
+func (sb *ServerBus) handleAck(data WsMessage, conn *ws.Conn, clientID string) {
 	if clientID == "" {
 		sb.sendError(conn, clientID, "client not registered")
 		return
 	}
 
-	// Les données ACK sont dans le champ "data"
-	ackData, ok := data["data"].(map[string]any)
+	// Les données ACK sont dans le champ "Data"
+	ackData, ok := data.Data.(map[string]any)
 	if !ok {
-		sb.sendError(conn, clientID, "missing ack data")
-		return
+		// Fallback pour compatibilité si l'ACK ID est direct
+		if data.AckID == "" {
+			sb.sendError(conn, clientID, "missing ack data")
+			return
+		}
 	}
 
-	ackID, ok := ackData["ack_id"].(string)
-	if !ok || ackID == "" {
+	ackID := data.AckID
+	if ackID == "" && ok {
+		ackID, _ = ackData["ack_id"].(string)
+	}
+
+	if ackID == "" {
 		sb.sendError(conn, clientID, "missing ack_id")
 		return
 	}
 
-	success, _ := ackData["success"].(bool)
-	errorMsg, _ := ackData["error"].(string)
+	var success bool
+	var errorMsg string
+	if ok {
+		success, _ = ackData["success"].(bool)
+		errorMsg, _ = ackData["error"].(string)
+	}
 
 	// Créer la réponse ACK
 	ackResp := ackResponse{
@@ -447,73 +450,68 @@ func (sb *ServerBus) handleAck(data map[string]any, conn *ws.Conn, clientID stri
 }
 
 // handleSubscribe - Gère la souscription WebSocket
-func (sb *ServerBus) handleSubscribe(data map[string]any, conn *ws.Conn, clientID string) {
+func (sb *ServerBus) handleSubscribe(data WsMessage, conn *ws.Conn, clientID string) {
 	if clientID == "" {
 		sb.sendError(conn, clientID, "client not registered, send ping first")
 		return
 	}
 
-	topic, ok := data["topic"].(string)
-	if !ok || topic == "" {
+	if data.Topic == "" {
 		sb.sendError(conn, clientID, "missing or invalid topic")
 		return
 	}
 
 	// Souscrire via le bus unifié
-	sb.Bus.subscribeWebSocket(clientID, topic, conn)
+	sb.Bus.subscribeWebSocket(clientID, data.Topic, conn)
 
 	// Confirmer la souscription
-	sb.sendResponse(conn, clientID, map[string]any{
-		"action": "subscribed",
-		"topic":  topic,
+	sb.sendResponse(conn, clientID, WsMessage{
+		Action: "subscribed",
+		Topic:  data.Topic,
 	})
 }
 
 // handleUnsubscribe - Gère le désabonnement WebSocket
-func (sb *ServerBus) handleUnsubscribe(data map[string]any, conn *ws.Conn, clientID string) {
+func (sb *ServerBus) handleUnsubscribe(data WsMessage, conn *ws.Conn, clientID string) {
 	if clientID == "" {
 		sb.sendError(conn, clientID, "client not registered")
 		return
 	}
 
-	topic, ok := data["topic"].(string)
-	if !ok || topic == "" {
+	if data.Topic == "" {
 		sb.sendError(conn, clientID, "missing or invalid topic")
 		return
 	}
 
 	// Désabonner via le bus unifié
-	sb.Bus.unsubscribeWebSocket(clientID, topic)
+	sb.Bus.unsubscribeWebSocket(clientID, data.Topic)
 
 	// Confirmer le désabonnement
-	sb.sendResponse(conn, clientID, map[string]any{
-		"action": "unsubscribed",
-		"topic":  topic,
+	sb.sendResponse(conn, clientID, WsMessage{
+		Action: "unsubscribed",
+		Topic:  data.Topic,
 	})
 }
 
 // handlePublish - Gère la publication WebSocket
-func (sb *ServerBus) handlePublish(data map[string]any, conn *ws.Conn, clientID string) {
+func (sb *ServerBus) handlePublish(data WsMessage, conn *ws.Conn, clientID string) {
 	if clientID == "" {
 		sb.sendError(conn, clientID, "client not registered")
 		return
 	}
 
-	topic, ok := data["topic"].(string)
-	if !ok || topic == "" {
+	if data.Topic == "" {
 		sb.sendError(conn, clientID, "missing or invalid topic")
 		return
 	}
 
-	payload := data["data"]
-
 	// Publier via le bus unifié (va notifier TOUS les subscribers)
-	sb.Bus.Publish(topic, payload)
+	sb.Bus.Publish(data.Topic, data.Data)
 
 	// Optionnel: confirmer la publication
-	sb.sendResponse(conn, clientID, map[string]any{
-		"action": "published",
-		"topic":  topic,
+	sb.sendResponse(conn, clientID, WsMessage{
+		Action: "published",
+		Topic:  data.Topic,
 	})
 }
 
@@ -553,7 +551,7 @@ func (sb *ServerBus) cleanupConnectionByConn(conn *ws.Conn) {
 }
 
 // sendResponse - Envoie une réponse JSON de manière sécurisée (via le Bus)
-func (sb *ServerBus) sendResponse(conn *ws.Conn, clientID string, data map[string]any) {
+func (sb *ServerBus) sendResponse(conn *ws.Conn, clientID string, data WsMessage) {
 	defer func() { recover() }() // Protection contre socket mockée/fermée prématurément
 
 	if clientID == "" {
@@ -567,14 +565,7 @@ func (sb *ServerBus) sendResponse(conn *ws.Conn, clientID string, data map[strin
 	sb.Bus.wsConnsMu.RUnlock()
 
 	if wsConn != nil {
-		msg := wsMessage{
-			Action: data["action"].(string),
-			Data:   data,
-		}
-		if topic, ok := data["topic"].(string); ok {
-			msg.Topic = topic
-		}
-		sb.Bus.sendToWebSocket(wsConn, msg)
+		sb.Bus.sendToWebSocket(wsConn, data)
 	} else {
 		// Fallback si pas encore dans le registre du bus
 		_ = conn.WriteJSON(data)
@@ -583,105 +574,96 @@ func (sb *ServerBus) sendResponse(conn *ws.Conn, clientID string, data map[strin
 
 // sendError - Envoie une erreur JSON de manière sécurisée
 func (sb *ServerBus) sendError(conn *ws.Conn, clientID string, message string) {
-	sb.sendResponse(conn, clientID, map[string]any{
-		"action": "error",
-		"error":  message,
+	sb.sendResponse(conn, clientID, WsMessage{
+		Action: "error",
+		Error:  message,
 	})
 }
 
 // handlePublishWithAck - Gère les demandes de publication avec ACK du client
-func (sb *ServerBus) handlePublishWithAck(data map[string]any, conn *ws.Conn, clientID string) {
+func (sb *ServerBus) handlePublishWithAck(data WsMessage, conn *ws.Conn, clientID string) {
 	if clientID == "" {
 		sb.sendError(conn, clientID, "client not registered")
 		return
 	}
 
-	topic, ok := data["topic"].(string)
-	if !ok || topic == "" {
+	if data.Topic == "" {
 		sb.sendError(conn, clientID, "missing or invalid topic")
 		return
 	}
 
-	ackID, ok := data["ack_id"].(string)
-	if !ok || ackID == "" {
+	if data.AckID == "" {
 		sb.sendError(conn, clientID, "missing ack_id")
 		return
 	}
 
-	payload := data["data"]
-
 	// Publier avec ACK via le bus
-	ack := sb.Bus.PublishWithAck(topic, payload, 30*time.Second) // Timeout par défaut
+	ack := sb.Bus.PublishWithAck(data.Topic, data.Data, 30*time.Second) // Timeout par défaut
 
 	// Attendre les réponses et les renvoyer au client
 	go func() {
 		responses := ack.Wait()
-		sb.sendResponse(conn, clientID, map[string]any{
-			"action":    "ack_response",
-			"ack_id":    ackID,
-			"responses": responses,
+		sb.sendResponse(conn, clientID, WsMessage{
+			Action:    "ack_response",
+			AckID:     data.AckID,
+			Responses: responses,
 		})
 	}()
 }
 
 // handlePublishToIDWithAck - Gère les demandes de message direct avec ACK
-func (sb *ServerBus) handlePublishToIDWithAck(data map[string]any, conn *ws.Conn, clientID string) {
+func (sb *ServerBus) handlePublishToIDWithAck(data WsMessage, conn *ws.Conn, clientID string) {
 	if clientID == "" {
 		sb.sendError(conn, clientID, "client not registered")
 		return
 	}
 
-	targetID, ok := data["to"].(string)
-	if !ok || targetID == "" {
+	if data.To == "" {
 		sb.sendError(conn, clientID, "missing target ID")
 		return
 	}
 
-	ackID, ok := data["ack_id"].(string)
-	if !ok || ackID == "" {
+	if data.AckID == "" {
 		sb.sendError(conn, clientID, "missing ack_id")
 		return
 	}
 
-	payload := data["data"]
-
 	// Publier avec ACK via le bus
-	ack := sb.PublishToIDWithAck(targetID, payload, 30*time.Second)
+	ack := sb.PublishToIDWithAck(data.To, data.Data, 30*time.Second)
 
 	// Attendre les réponses et les renvoyer au client
 	go func() {
 		responses := ack.Wait()
-		sb.sendResponse(conn, clientID, map[string]any{
-			"action":    "ack_response",
-			"ack_id":    ackID,
-			"responses": responses,
+		sb.sendResponse(conn, clientID, WsMessage{
+			Action:    "ack_response",
+			AckID:     data.AckID,
+			Responses: responses,
 		})
 	}()
 }
 
 // handleGetAckStatus - Gère les demandes de statut ACK
-func (sb *ServerBus) handleGetAckStatus(data map[string]any, conn *ws.Conn, clientID string) {
+func (sb *ServerBus) handleGetAckStatus(data WsMessage, conn *ws.Conn, clientID string) {
 	if clientID == "" {
 		sb.sendError(conn, clientID, "client not registered")
 		return
 	}
 
-	ackID, ok := data["ack_id"].(string)
-	if !ok || ackID == "" {
+	if data.AckID == "" {
 		sb.sendError(conn, clientID, "missing ack_id")
 		return
 	}
 
 	// Chercher l'ACK dans le bus
 	sb.Bus.ackMu.RLock()
-	ackReq := sb.Bus.ackRequests[ackID]
+	ackReq := sb.Bus.ackRequests[data.AckID]
 	sb.Bus.ackMu.RUnlock()
 
 	if ackReq == nil {
-		sb.sendResponse(conn, clientID, map[string]any{
-			"action": "ack_status",
-			"ack_id": ackID,
-			"status": make(map[string]bool),
+		sb.sendResponse(conn, clientID, WsMessage{
+			Action: "ack_status",
+			AckID:  data.AckID,
+			Status: make(map[string]bool),
 		})
 		return
 	}
@@ -694,33 +676,32 @@ func (sb *ServerBus) handleGetAckStatus(data map[string]any, conn *ws.Conn, clie
 	}
 	ackReq.mu.RUnlock()
 
-	sb.sendResponse(conn, clientID, map[string]any{
-		"action": "ack_status",
-		"ack_id": ackID,
-		"status": status,
+	sb.sendResponse(conn, clientID, WsMessage{
+		Action: "ack_status",
+		AckID:  data.AckID,
+		Status: status,
 	})
 }
 
 // handleCancelAck - Gère les demandes d'annulation ACK
-func (sb *ServerBus) handleCancelAck(data map[string]any, conn *ws.Conn, clientID string) {
+func (sb *ServerBus) handleCancelAck(data WsMessage, conn *ws.Conn, clientID string) {
 	if clientID == "" {
 		sb.sendError(conn, clientID, "client not registered")
 		return
 	}
 
-	ackID, ok := data["ack_id"].(string)
-	if !ok || ackID == "" {
+	if data.AckID == "" {
 		sb.sendError(conn, clientID, "missing ack_id")
 		return
 	}
 
 	// Chercher et annuler l'ACK dans le bus
-	sb.Bus.cancelAck(ackID)
+	sb.Bus.cancelAck(data.AckID)
 
 	// Confirmer l'annulation
-	sb.sendResponse(conn, clientID, map[string]any{
-		"action": "ack_cancelled",
-		"ack_id": ackID,
+	sb.sendResponse(conn, clientID, WsMessage{
+		Action: "ack_cancelled",
+		AckID:  data.AckID,
 	})
 }
 

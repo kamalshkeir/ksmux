@@ -282,7 +282,7 @@ func (wp *workerPool) close() {
 
 // publishToWebSocket - Publication optimisée vers WebSocket
 func (ps *Bus) publishToWebSocket(topic string, data any, wsTopicData *wsTopicData) {
-	msg := wsMessage{
+	msg := WsMessage{
 		Action: "publish",
 		Topic:  topic,
 		Data:   data,
@@ -308,7 +308,7 @@ func (ps *Bus) publishToWebSocket(topic string, data any, wsTopicData *wsTopicDa
 }
 
 // sendToWebSocket - Envoi optimisé vers une connexion WebSocket
-func (ps *Bus) sendToWebSocket(conn *wsConnection, msg wsMessage) {
+func (ps *Bus) sendToWebSocket(conn *wsConnection, msg WsMessage) {
 	if !conn.active.Load() {
 		return
 	}
@@ -370,7 +370,7 @@ func (ps *Bus) registerWebSocket(clientID string, wsConn *ws.Conn) *wsConnection
 			id:     clientID,
 			conn:   wsConn,
 			topics: make(map[unique.Handle[string]]bool),
-			sendCh: make(chan wsMessage, 1024),
+			sendCh: make(chan WsMessage, 1024),
 			stopCh: make(chan struct{}),
 		}
 		conn.active.Store(true)
@@ -383,7 +383,7 @@ func (ps *Bus) registerWebSocket(clientID string, wsConn *ws.Conn) *wsConnection
 		conn.conn = wsConn
 		if !conn.active.Load() {
 			conn.active.Store(true)
-			conn.sendCh = make(chan wsMessage, 1024)
+			conn.sendCh = make(chan WsMessage, 1024)
 			conn.stopCh = make(chan struct{})
 			go ps.wsConnectionSender(conn)
 		}
@@ -483,7 +483,7 @@ func (ps *Bus) wsConnectionSender(conn *wsConnection) {
 	}
 }
 
-func (ps *Bus) internalSendMessage(conn *wsConnection, msg wsMessage) {
+func (ps *Bus) internalSendMessage(conn *wsConnection, msg WsMessage) {
 	defer func() { recover() }() // Protection contre socket corrompue/mockée sans deadlines
 
 	conn.mu.RLock()
@@ -927,7 +927,7 @@ func (ps *Bus) publishWithAckID(topic string, data any, ackID string) {
 
 // publishToWebSocketWithAck - Publication WebSocket avec ACK
 func (ps *Bus) publishToWebSocketWithAck(topic string, data any, ackID string, wsTopicData *wsTopicData) {
-	msg := wsMessage{
+	msg := WsMessage{
 		Action: "publish_ack",
 		Topic:  topic,
 		Data:   data,

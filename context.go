@@ -222,11 +222,9 @@ func (c *Context) Json(data any) {
 	}
 	c.SetStatus(c.status)
 
-	by, err := jsonencdec.DefaultMarshal(data)
-	if !lg.CheckError(err) {
-		_, err = c.ResponseWriter.Write(by)
-		lg.CheckError(err)
-	}
+	enc := jsonencdec.DefaultNewEncoder(c.ResponseWriter)
+	err := enc.Encode(data)
+	lg.CheckError(err)
 }
 
 // JsonIndent return json indented to the client

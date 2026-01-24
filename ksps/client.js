@@ -705,17 +705,14 @@ class Client {
      * @param {Object} data - Données du message
      */
     handleAckResponse(data) {
-        // Le payload est dans data["data"] car wsMessage met tout dedans
-        const payload = data.data;
-        if (!payload) return;
-
-        const ackID = payload.ack_id;
+        // Support optimized protocol (flat) or legacy (nested in data)
+        const ackID = data.ack_id || (data.data && data.data.ack_id);
         if (!ackID || !this.ackRequests) return;
 
         const clientAck = this.ackRequests.get(ackID);
         if (!clientAck || clientAck.cancelled) return;
 
-        const responses = payload.responses || {};
+        const responses = data.responses || (data.data && data.data.responses) || {};
         clientAck.handleResponse(responses);
     }
 
@@ -724,17 +721,13 @@ class Client {
      * @param {Object} data - Données du message
      */
     handleAckStatus(data) {
-        // Le payload est dans data["data"]
-        const payload = data.data;
-        if (!payload) return;
-
-        const ackID = payload.ack_id;
+        const ackID = data.ack_id || (data.data && data.data.ack_id);
         if (!ackID || !this.ackRequests) return;
 
         const clientAck = this.ackRequests.get(ackID);
         if (!clientAck || clientAck.cancelled) return;
 
-        const status = payload.status || {};
+        const status = data.status || (data.data && data.data.status) || {};
         clientAck.handleStatus(status);
     }
 
@@ -743,11 +736,7 @@ class Client {
      * @param {Object} data - Données du message
      */
     handleAckCancelled(data) {
-        // Le payload est dans data["data"]
-        const payload = data.data;
-        if (!payload) return;
-
-        const ackID = payload.ack_id;
+        const ackID = data.ack_id || (data.data && data.data.ack_id);
         if (!ackID || !this.ackRequests) return;
 
         // Nettoyer l'ACK local

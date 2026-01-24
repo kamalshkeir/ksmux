@@ -1,43 +1,42 @@
-// Copyright 2013 The Gorilla WebSocket Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package ws
 
 import (
-	"sync"
-
-	"encoding/json"
+	"github.com/kamalshkeir/ksmux/jsonencdec"
 )
 
-var (
-	decoderPool = sync.Pool{
-		New: func() interface{} {
-			return json.NewDecoder(nil)
-		},
-	}
-)
+type ksmuxFastEncoder interface {
+	MarshalKSMUX() ([]byte, error)
+}
 
-// WriteJSON writes the JSON encoding of v as a message through the actor
 func (c *Conn) WriteJSON(v interface{}) error {
-	data, err := json.Marshal(v)
+	if m, ok := v.(ksmuxFastEncoder); ok {
+		data, err := m.MarshalKSMUX()
+		if err == nil {
+			return c.WriteMessage(TextMessage, data)
+		}
+	}
+	data, err := jsonencdec.DefaultMarshal(v)
 	if err != nil {
 		return err
 	}
-
 	return c.WriteMessage(TextMessage, data)
 }
 
-// ReadJSON reads the next JSON-encoded message from the connection and stores
 func (c *Conn) ReadJSON(v interface{}) error {
 	_, r, err := c.NextReader()
 	if err != nil {
 		return err
 	}
+	return jsonencdec.DefaultNewDecoder(r).Decode(v)
+}
 
-	dec := decoderPool.Get().(*json.Decoder)
-	dec = json.NewDecoder(r)
-	err = dec.Decode(v)
-	decoderPool.Put(dec)
-	return err
+func ReadJSONFromBytes(data []byte, v interface{}) error {
+	return jsonencdec.DefaultUnmarshal(data, v)
+}
+
+func WriteJSONToBytes(v interface{}) ([]byte, error) {
+	if m, ok := v.(ksmuxFastEncoder); ok {
+		return m.MarshalKSMUX()
+	}
+	return jsonencdec.DefaultMarshal(v)
 }

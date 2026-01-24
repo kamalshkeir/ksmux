@@ -17,8 +17,8 @@ import (
 type Client struct {
 	Id           string
 	ServerAddr   string
-	onDataWS     func(data map[string]any, conn *ws.Conn) error
-	onId         func(data map[string]any, unsub ClientSubscriber)
+	onDataWS     func(data WsMessage, conn *ws.Conn) error
+	onId         func(data WsMessage, unsub ClientSubscriber)
 	onClose      func()
 	RestartEvery time.Duration
 	Conn         *ws.Conn
@@ -28,7 +28,7 @@ type Client struct {
 	// Optimisations pour pub/sub
 	subscriptions map[string]*clientSubscription // topic -> subscription
 	subMu         sync.RWMutex
-	messageQueue  chan wsMessage // Queue pour messages sortants
+	messageQueue  chan WsMessage // Queue pour messages sortants
 	connected     atomic.Bool
 
 	// ACK system côté client
@@ -50,8 +50,8 @@ type ClientConnectOptions struct {
 	Path         string // default ksbus.ServerPath
 	Autorestart  bool
 	RestartEvery time.Duration
-	OnDataWs     func(data map[string]any, conn *ws.Conn) error
-	OnId         func(data map[string]any, unsub ClientSubscriber)
+	OnDataWs     func(data WsMessage, conn *ws.Conn) error
+	OnId         func(data WsMessage, unsub ClientSubscriber)
 	OnClose      func()
 }
 
@@ -72,7 +72,7 @@ func NewClient(opts ClientConnectOptions) (*Client, error) {
 		opts.RestartEvery = 10 * time.Second
 	}
 	if opts.OnDataWs == nil {
-		opts.OnDataWs = func(data map[string]any, conn *ws.Conn) error { return nil }
+		opts.OnDataWs = func(data WsMessage, conn *ws.Conn) error { return nil }
 	}
 	cl := &Client{
 		Id:            opts.Id,
@@ -84,7 +84,7 @@ func NewClient(opts ClientConnectOptions) (*Client, error) {
 		Done:          make(chan struct{}),
 		subscriptions: make(map[string]*clientSubscription),
 		ackRequests:   make(map[string]*ClientAck),
-		messageQueue:  make(chan wsMessage, 1024),
+		messageQueue:  make(chan WsMessage, 1024),
 	}
 	if cl.Id == "" {
 		cl.Id = ksmux.GenerateID()
@@ -138,7 +138,7 @@ func (client *Client) connect(opts ClientConnectOptions) error {
 	go client.messageSender(stopCh)
 
 	// Ping initial pour enregistrer le client
-	client.sendMessage(wsMessage{
+	client.sendMessage(WsMessage{
 		Action: "ping",
 		From:   client.Id,
 	})
@@ -161,7 +161,7 @@ func (client *Client) messageHandler(stopCh chan struct{}) {
 				return
 			}
 
-			var m map[string]any
+			var m WsMessage
 			err := client.Conn.ReadJSON(&m)
 			if err != nil {
 				lg.DebugC("WebSocket read error:", "error", err.Error())
@@ -208,16 +208,18 @@ func (client *Client) messageSender(stopCh chan struct{}) {
 }
 
 // handleMessage - Traite les messages reçus du serveur
-func (client *Client) handleMessage(data map[string]any) {
-	action, ok := data["action"].(string)
-	if !ok {
+func (client *Client) handleMessage(data WsMessage) {
+	if data.Action == "" {
 		return
 	}
 
-	switch action {
+	switch data.Action {
 	case "pong":
 		// Confirmation de connexion
 		if client.onId != nil {
+			if client.Id == "" && data.ID != "" {
+				client.Id = data.ID
+			}
 			client.onId(data, ClientSubscriber{client: client})
 		}
 
@@ -232,17 +234,22 @@ func (client *Client) handleMessage(data map[string]any) {
 	case "direct_message":
 		// Message direct vers ce client
 		if client.onId != nil {
-			payload := data["data"]
-			client.onId(map[string]any{"data": payload}, ClientSubscriber{client: client})
+			client.onId(data, ClientSubscriber{client: client})
 		}
 
 	case "subscribed", "unsubscribed", "published":
 		// Confirmations - on peut les ignorer ou les logger
-		lg.DebugC("Received confirmation:", "action", action)
+		lg.DebugC("Received confirmation:", "action", data.Action)
 
 	case "error":
 		// Erreur du serveur
-		if errMsg, ok := data["error"].(string); ok {
+		errMsg := data.Error
+		if errMsg == "" {
+			if s, ok := data.Data.(string); ok {
+				errMsg = s
+			}
+		}
+		if errMsg != "" {
 			lg.DebugC("Server error:", "error", errMsg)
 		}
 
@@ -257,52 +264,50 @@ func (client *Client) handleMessage(data map[string]any) {
 
 	// Callback utilisateur pour tous les messages
 	if client.onDataWS != nil {
-		client.onDataWS(data, client.Conn)
+		client.subMu.RLock()
+		conn := client.Conn
+		client.subMu.RUnlock()
+		if conn != nil {
+			client.onDataWS(data, conn)
+		}
 	}
 }
 
 // handlePublishMessage - Traite les messages publiés
-func (client *Client) handlePublishMessage(data map[string]any) {
-	topic, ok := data["topic"].(string)
-	if !ok {
+func (client *Client) handlePublishMessage(data WsMessage) {
+	if data.Topic == "" {
 		return
 	}
 
-	payload := data["data"]
-
 	client.subMu.RLock()
-	sub := client.subscriptions[topic]
+	sub := client.subscriptions[data.Topic]
 	client.subMu.RUnlock()
 
 	if sub != nil && sub.active.Load() {
 		// Créer fonction d'unsubscribe
 		unsubFn := func() {
-			client.Unsubscribe(topic)
+			client.Unsubscribe(data.Topic)
 		}
 
 		// Exécuter le callback
-		go sub.callback(payload, unsubFn)
+		go sub.callback(data.Data, unsubFn)
 	}
 }
 
 // handlePublishAckMessage - Traite les messages publiés avec ACK
-func (client *Client) handlePublishAckMessage(data map[string]any) {
-	topic, ok := data["topic"].(string)
-	if !ok {
+func (client *Client) handlePublishAckMessage(data WsMessage) {
+	if data.Topic == "" {
 		return
 	}
 
-	payload := data["data"]
-	ackID, _ := data["ack_id"].(string)
-
 	client.subMu.RLock()
-	sub := client.subscriptions[topic]
+	sub := client.subscriptions[data.Topic]
 	client.subMu.RUnlock()
 
 	if sub != nil && sub.active.Load() {
 		// Créer fonction d'unsubscribe
 		unsubFn := func() {
-			client.Unsubscribe(topic)
+			client.Unsubscribe(data.Topic)
 		}
 
 		// Exécuter le callback
@@ -317,22 +322,22 @@ func (client *Client) handlePublishAckMessage(data map[string]any) {
 					errorMsg = fmt.Sprintf("panic: %v", r)
 				}
 				// Envoyer ACK après traitement (succès ou erreur)
-				if ackID != "" {
-					client.sendAck(ackID, success, errorMsg)
+				if data.AckID != "" {
+					client.sendAck(data.AckID, success, errorMsg)
 				}
 			}()
 
-			sub.callback(payload, unsubFn)
+			sub.callback(data.Data, unsubFn)
 		}()
-	} else if ackID != "" {
+	} else if data.AckID != "" {
 		// Pas de subscriber, envoyer ACK d'erreur
-		client.sendAck(ackID, false, "no subscriber for topic")
+		client.sendAck(data.AckID, false, "no subscriber for topic")
 	}
 }
 
 // sendAck - Envoie un acknowledgment
 func (client *Client) sendAck(ackID string, success bool, errorMsg string) {
-	ackMsg := wsMessage{
+	ackMsg := WsMessage{
 		Action: "ack",
 		AckID:  ackID,
 		From:   client.Id,
@@ -371,7 +376,7 @@ func (client *Client) Subscribe(topic string, callback func(data any, unsub func
 	client.subMu.Unlock()
 
 	// Envoyer la demande de souscription au serveur
-	client.sendMessage(wsMessage{
+	client.sendMessage(WsMessage{
 		Action: "subscribe",
 		Topic:  topic,
 		From:   client.Id,
@@ -394,7 +399,7 @@ func (client *Client) Unsubscribe(topic string) {
 
 	if client.connected.Load() {
 		// Envoyer la demande de désabonnement au serveur
-		client.sendMessage(wsMessage{
+		client.sendMessage(WsMessage{
 			Action: "unsubscribe",
 			Topic:  topic,
 			From:   client.Id,
@@ -409,7 +414,7 @@ func (client *Client) Publish(topic string, data any) {
 		return
 	}
 
-	client.sendMessage(wsMessage{
+	client.sendMessage(WsMessage{
 		Action: "publish",
 		Topic:  topic,
 		Data:   data,
@@ -424,7 +429,7 @@ func (client *Client) PublishToID(targetID string, data any) {
 		return
 	}
 
-	client.sendMessage(wsMessage{
+	client.sendMessage(WsMessage{
 		Action: "direct_message",
 		To:     targetID,
 		Data:   data,
@@ -439,11 +444,13 @@ func (client *Client) PublishToServer(addr string, data any, secure ...bool) {
 		return
 	}
 
-	client.sendMessage(wsMessage{
+	client.sendMessage(WsMessage{
 		Action: "publish_to_server",
 		To:     addr,
-		Data:   data,
-		From:   client.Id,
+		Data: map[string]any{
+			"data": data,
+		},
+		From: client.Id,
 	})
 }
 
@@ -471,7 +478,7 @@ func (client *Client) PublishWithAck(topic string, data any, timeout time.Durati
 	client.subMu.Unlock()
 
 	// Envoyer la demande au serveur
-	client.sendMessage(wsMessage{
+	client.sendMessage(WsMessage{
 		Action: "publish_with_ack",
 		Topic:  topic,
 		Data:   data,
@@ -506,7 +513,7 @@ func (client *Client) PublishToIDWithAck(targetID string, data any, timeout time
 	client.subMu.Unlock()
 
 	// Envoyer la demande au serveur
-	client.sendMessage(wsMessage{
+	client.sendMessage(WsMessage{
 		Action: "publish_to_id_with_ack",
 		To:     targetID,
 		Data:   data,
@@ -518,12 +525,15 @@ func (client *Client) PublishToIDWithAck(targetID string, data any, timeout time
 }
 
 // sendMessage - Envoi non-bloquant de message
-func (client *Client) sendMessage(msg wsMessage) {
+func (client *Client) sendMessage(msg WsMessage) {
+	if client.Done == nil {
+		return
+	}
 	select {
+	case <-client.Done:
+		return
 	case client.messageQueue <- msg:
-	default:
-		// Queue pleine, on drop le message
-		lg.DebugC("Message queue full, dropping message")
+		// Message envoyé à la queue
 	}
 }
 
@@ -533,21 +543,13 @@ func (client *Client) generateAckID() string {
 }
 
 // handleAckResponse - Traite les réponses ACK du serveur
-func (client *Client) handleAckResponse(data map[string]any) {
-	// Le payload est dans data["data"] car wsMessage met tout dedans
-	payload, ok := data["data"].(map[string]any)
-	if !ok {
-		// Fallback ou erreur
-		return
-	}
-
-	ackID, ok := payload["ack_id"].(string)
-	if !ok {
+func (client *Client) handleAckResponse(data WsMessage) {
+	if data.AckID == "" {
 		return
 	}
 
 	client.subMu.RLock()
-	clientAck := client.ackRequests[ackID]
+	clientAck := client.ackRequests[data.AckID]
 	client.subMu.RUnlock()
 
 	if clientAck == nil || clientAck.cancelled.Load() {
@@ -555,46 +557,48 @@ func (client *Client) handleAckResponse(data map[string]any) {
 	}
 
 	// Extraire les réponses
-	if responsesData, ok := payload["responses"].(map[string]any); ok {
-		responses := make(map[string]ackResponse)
-		for clientID, respData := range responsesData {
-			if respMap, ok := respData.(map[string]any); ok {
-				resp := ackResponse{
-					ClientID: clientID,
-				}
-				if success, ok := respMap["success"].(bool); ok {
-					resp.Success = success
-				}
-				if errorMsg, ok := respMap["error"].(string); ok {
-					resp.Error = errorMsg
-				}
-				responses[clientID] = resp
-			}
-		}
-
+	if data.Responses != nil {
 		// Envoyer les réponses
 		select {
-		case clientAck.responses <- responses:
+		case clientAck.responses <- data.Responses:
 		default:
+		}
+	} else if data.Data != nil {
+		// Fallback si Responses n'est pas utilisé (compatibilité)
+		if payload, ok := data.Data.(map[string]any); ok {
+			if responsesData, ok := payload["responses"].(map[string]any); ok {
+				responses := make(map[string]ackResponse)
+				for clientID, respData := range responsesData {
+					if respMap, ok := respData.(map[string]any); ok {
+						resp := ackResponse{
+							ClientID: clientID,
+						}
+						if success, ok := respMap["success"].(bool); ok {
+							resp.Success = success
+						}
+						if errorMsg, ok := respMap["error"].(string); ok {
+							resp.Error = errorMsg
+						}
+						responses[clientID] = resp
+					}
+				}
+				select {
+				case clientAck.responses <- responses:
+				default:
+				}
+			}
 		}
 	}
 }
 
 // handleAckStatus - Traite les statuts ACK du serveur
-func (client *Client) handleAckStatus(data map[string]any) {
-	// Le payload est dans data["data"]
-	payload, ok := data["data"].(map[string]any)
-	if !ok {
-		return
-	}
-
-	ackID, ok := payload["ack_id"].(string)
-	if !ok {
+func (client *Client) handleAckStatus(data WsMessage) {
+	if data.AckID == "" {
 		return
 	}
 
 	client.subMu.RLock()
-	clientAck := client.ackRequests[ackID]
+	clientAck := client.ackRequests[data.AckID]
 	client.subMu.RUnlock()
 
 	if clientAck == nil || clientAck.cancelled.Load() {
@@ -602,18 +606,27 @@ func (client *Client) handleAckStatus(data map[string]any) {
 	}
 
 	// Extraire le statut
-	if statusData, ok := data["status"].(map[string]any); ok {
-		status := make(map[string]bool)
-		for clientID, received := range statusData {
-			if receivedBool, ok := received.(bool); ok {
-				status[clientID] = receivedBool
-			}
-		}
-
+	if data.Status != nil {
 		// Envoyer le statut
 		select {
-		case clientAck.status <- status:
+		case clientAck.status <- data.Status:
 		default:
+		}
+	} else if data.Data != nil {
+		// Fallback compatibilité
+		if payload, ok := data.Data.(map[string]any); ok {
+			if statusData, ok := payload["status"].(map[string]any); ok {
+				status := make(map[string]bool)
+				for clientID, received := range statusData {
+					if receivedBool, ok := received.(bool); ok {
+						status[clientID] = receivedBool
+					}
+				}
+				select {
+				case clientAck.status <- status:
+				default:
+				}
+			}
 		}
 	}
 }
@@ -675,7 +688,7 @@ func (client *Client) resubscribeAll() {
 
 	// Re-souscrire à tous les topics
 	for _, topic := range topics {
-		client.sendMessage(wsMessage{
+		client.sendMessage(WsMessage{
 			Action: "subscribe",
 			Topic:  topic,
 			From:   client.Id,
@@ -693,6 +706,7 @@ func (client *Client) Close() error {
 		client.onClose()
 	}
 
+	client.subMu.Lock()
 	if client.Conn != nil {
 		func() {
 			defer func() { recover() }()
@@ -701,6 +715,7 @@ func (client *Client) Close() error {
 		}()
 		client.Conn = nil
 	}
+	client.subMu.Unlock()
 
 	// Signaler l'arrêt de manière idempotente
 	select {
@@ -779,7 +794,7 @@ func (ack *ClientAck) GetStatus() map[string]bool {
 	}
 
 	// Demander le statut au serveur
-	ack.Client.sendMessage(wsMessage{
+	ack.Client.sendMessage(WsMessage{
 		Action: "get_ack_status",
 		AckID:  ack.ID,
 		From:   ack.Client.Id,
@@ -817,7 +832,7 @@ func (ack *ClientAck) Cancel() {
 	ack.cancelled.Store(true)
 
 	// Envoyer la demande d'annulation au serveur
-	ack.Client.sendMessage(wsMessage{
+	ack.Client.sendMessage(WsMessage{
 		Action: "cancel_ack",
 		AckID:  ack.ID,
 		From:   ack.Client.Id,
