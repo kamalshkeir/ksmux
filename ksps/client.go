@@ -161,8 +161,17 @@ func (client *Client) messageHandler(stopCh chan struct{}) {
 				return
 			}
 
+			// Get connection safely
+			client.subMu.RLock()
+			conn := client.Conn
+			client.subMu.RUnlock()
+
+			if conn == nil {
+				return
+			}
+
 			var m WsMessage
-			err := client.Conn.ReadJSON(&m)
+			err := conn.ReadJSON(&m)
 			if err != nil {
 				lg.DebugC("WebSocket read error:", "error", err.Error())
 				client.connected.Store(false)
@@ -198,7 +207,16 @@ func (client *Client) messageSender(stopCh chan struct{}) {
 				continue
 			}
 
-			if err := client.Conn.WriteJSON(msg); err != nil {
+			// Get connection safely
+			client.subMu.RLock()
+			conn := client.Conn
+			client.subMu.RUnlock()
+
+			if conn == nil {
+				continue
+			}
+
+			if err := conn.WriteJSON(msg); err != nil {
 				lg.DebugC("WebSocket write error:", "error", err.Error())
 				client.connected.Store(false)
 				return
@@ -289,8 +307,9 @@ func (client *Client) handlePublishMessage(data WsMessage) {
 			client.Unsubscribe(data.Topic)
 		}
 
-		// Exécuter le callback
-		go sub.callback(data.Data, unsubFn)
+		// Exécuter le callback inline (pas de goroutine pour éviter les allocations)
+		// Le message handler tourne déjà dans sa propre goroutine
+		sub.callback(data.Data, unsubFn)
 	}
 }
 
@@ -700,12 +719,27 @@ func (client *Client) Close() error {
 	if client == nil {
 		return nil
 	}
+
+	// First, signal all goroutines to stop
 	client.connected.Store(false)
+
+	// Signal Done channel to stop messageHandler and messageSender
+	select {
+	case <-client.Done:
+		// Already closed
+	default:
+		close(client.Done)
+	}
+
+	// Give goroutines a moment to exit their read/write operations
+	// This prevents the race between Close() and ReadJSON()
+	time.Sleep(10 * time.Millisecond)
 
 	if client.onClose != nil {
 		client.onClose()
 	}
 
+	// Now safe to close the connection
 	client.subMu.Lock()
 	if client.Conn != nil {
 		func() {
@@ -717,12 +751,6 @@ func (client *Client) Close() error {
 	}
 	client.subMu.Unlock()
 
-	// Signaler l'arrêt de manière idempotente
-	select {
-	case <-client.Done:
-	default:
-		close(client.Done)
-	}
 	return nil
 }
 

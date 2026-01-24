@@ -2,7 +2,6 @@ package ws
 
 import (
 	"io"
-	"net"
 	"time"
 )
 
@@ -11,10 +10,10 @@ type WriteTask struct {
 	frames   [][]byte   // Frames to write
 	deadline time.Time  // Write deadline
 	done     chan error // Signals completion with error if any
-	conn     net.Conn   // Connection to write to
+	conn     *Conn      // Connection to write to (changed to *Conn for mutex access)
 }
 
-func NewWriteTask(frames [][]byte, deadline time.Time, done chan error, conn net.Conn) *WriteTask {
+func NewWriteTask(frames [][]byte, deadline time.Time, done chan error, conn *Conn) *WriteTask {
 	return &WriteTask{
 		frames:   frames,
 		deadline: deadline,
@@ -30,14 +29,17 @@ func (t *WriteTask) Execute() error {
 	}
 
 	// Set deadline
-	if err := t.conn.SetWriteDeadline(t.deadline); err != nil {
+	if err := t.conn.conn.SetWriteDeadline(t.deadline); err != nil {
 		t.done <- err
 		return err
 	}
 
 	// Write all frames
 	for _, frame := range t.frames {
-		if _, err := t.conn.Write(frame); err != nil {
+		t.conn.writeMu.Lock()
+		_, err := t.conn.conn.Write(frame)
+		t.conn.writeMu.Unlock()
+		if err != nil {
 			t.done <- err
 			return err
 		}

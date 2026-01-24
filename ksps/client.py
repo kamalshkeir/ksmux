@@ -254,16 +254,23 @@ class Client:
                 raise e
 
     async def message_handler(self):
-        """Gère les messages entrants de manière asynchrone"""
+        """Gère les messages entrants de manière asynchrone (supports wire-level batching)"""
         try:
             async for message in self.Conn:
                 if self.Done or not self.connected:
                     break
 
                 try:
-                    data = json.loads(message)
-                    # Traiter le message dans une tâche séparée pour ne pas bloquer
-                    asyncio.create_task(self.handle_message(data))
+                    parsed = json.loads(message)
+                    
+                    # Detect if it's a batch (list) or single message (dict)
+                    if isinstance(parsed, list):
+                        # Batch message: list of WsMessage
+                        for msg in parsed:
+                            asyncio.create_task(self.handle_message(msg))
+                    else:
+                        # Single message: WsMessage dict
+                        asyncio.create_task(self.handle_message(parsed))
                 except json.JSONDecodeError as e:
                     logging.error(f"WebSocket JSON decode error: {e}")
                 except Exception as e:

@@ -198,6 +198,15 @@ var (
 			return make([]byte, 32*1024) // 32KB buffer - smaller but more efficient
 		},
 	}
+
+	// Frame buffer pool for write operations - avoids allocation per message
+	// Uses pointer to slice for proper pooling
+	framePool = sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, 0, 4096) // 4KB capacity covers most messages
+			return &b
+		},
+	}
 )
 
 func init() {
@@ -234,6 +243,92 @@ func (c *Conn) WriteMessage(messageType int, data []byte) error {
 	return c.writeMessageWithPool(messageType, data)
 }
 
+// WriteMessageDirect writes a message directly to the socket using pooled buffers
+// This is the fastest path for server-side writes - zero allocations for small messages
+func (c *Conn) WriteMessageDirect(messageType int, data []byte) error {
+	c.writeErrMu.Lock()
+	if c.writeErr != nil {
+		err := c.writeErr
+		c.writeErrMu.Unlock()
+		return err
+	}
+	c.writeErrMu.Unlock()
+
+	// Calculate frame size
+	length := len(data)
+	var headerSize int
+	if length >= 65536 {
+		headerSize = 10
+	} else if length > 125 {
+		headerSize = 4
+	} else {
+		headerSize = 2
+	}
+	// Server doesn't need mask, client adds 4 bytes for mask
+	if !c.isServer {
+		headerSize += 4
+	}
+
+	totalSize := headerSize + length
+
+	// Use pooled buffer for small to medium messages
+	var frame []byte
+	var bufPtr *[]byte
+	if totalSize <= 4096 {
+		bufPtr = framePool.Get().(*[]byte)
+		if cap(*bufPtr) >= totalSize {
+			frame = (*bufPtr)[:totalSize]
+		} else {
+			// Rare: buffer too small, allocate
+			frame = make([]byte, totalSize)
+		}
+	} else {
+		// Large message: allocate directly
+		frame = make([]byte, totalSize)
+	}
+
+	// Build frame header
+	frame[0] = byte(messageType) | finalBit
+	pos := 2
+
+	if length >= 65536 {
+		frame[1] = 127
+		binary.BigEndian.PutUint64(frame[2:], uint64(length))
+		pos = 10
+	} else if length > 125 {
+		frame[1] = 126
+		binary.BigEndian.PutUint16(frame[2:], uint16(length))
+		pos = 4
+	} else {
+		frame[1] = byte(length)
+	}
+
+	// Apply mask if client
+	if !c.isServer {
+		frame[1] |= maskBit
+		key := newMaskKey()
+		copy(frame[pos:], key[:])
+		pos += 4
+		copy(frame[pos:], data)
+		maskBytes(key, 0, frame[pos:])
+	} else {
+		copy(frame[pos:], data)
+	}
+
+	// Direct write to socket - ensure exclusive access
+	c.writeMu.Lock()
+	_, err := c.conn.Write(frame)
+	c.writeMu.Unlock()
+
+	// Return pooled buffer
+	if bufPtr != nil {
+		*bufPtr = (*bufPtr)[:0]
+		framePool.Put(bufPtr)
+	}
+
+	return err
+}
+
 // ReadMessage is a helper method for getting a reader using NextReader and
 // reading from that reader to a buffer.
 func (c *Conn) ReadMessage() (messageType int, p []byte, err error) {
@@ -263,6 +358,7 @@ type Conn struct {
 	// Write fields
 	writeErr       error
 	writeErrMu     sync.Mutex // Protects writeErr
+	writeMu        sync.Mutex // Protects concurrent writes to conn
 	writeBuf       []byte
 	bufferPool     BufferPool
 	writeBufSize   int
@@ -290,8 +386,9 @@ type Conn struct {
 	compressionLevel       int
 	newCompressionWriter   func(io.WriteCloser, int) io.WriteCloser
 
-	reader        io.ReadCloser  // the current reader returned to the application
-	messageReader *messageReader // the current low-level reader
+	reader        io.ReadCloser // the current reader returned to the application
+	readerStruct  messageReader // embedded reader to avoid allocation
+	messageReader *messageReader
 
 	readDecompress         bool // whether last read frame had RSV1 set
 	newDecompressionReader func(io.Reader) io.ReadCloser
@@ -462,14 +559,16 @@ func (c *Conn) writeMessageWithPool(messageType int, data []byte) error {
 	frame := c.prepareFrame(messageType, data)
 
 	// Try direct write first as it's fastest
+	c.writeMu.Lock()
 	_, err := c.conn.Write(frame)
+	c.writeMu.Unlock()
 	if err == nil {
 		return nil
 	}
 
 	// Create write request with buffered done channel
 	done := make(chan error, 1)
-	task := NewWriteTask([][]byte{frame}, time.Now().Add(writeWait), done, c.conn)
+	task := NewWriteTask([][]byte{frame}, time.Now().Add(writeWait), done, c)
 
 	// Try submitting to worker pool
 	if !writePool.Submit(task) {
@@ -723,7 +822,9 @@ func (c *Conn) WriteControl(messageType int, data []byte, deadline time.Time) er
 		maskBytes(key, 0, buf[6:])
 	}
 
+	c.writeMu.Lock()
 	_, err := c.conn.Write(buf)
+	c.writeMu.Unlock()
 	if err != nil {
 		return c.writeFatal(err)
 	}
@@ -1171,7 +1272,9 @@ func (c *Conn) NextReader() (messageType int, r io.Reader, err error) {
 		}
 
 		if frameType == TextMessage || frameType == BinaryMessage {
-			c.messageReader = &messageReader{c}
+			// Recycle the embedded reader structure
+			c.readerStruct.c = c
+			c.messageReader = &c.readerStruct
 			c.reader = c.messageReader
 			if c.readDecompress {
 				c.reader = c.newDecompressionReader(c.reader)

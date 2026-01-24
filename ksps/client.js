@@ -292,7 +292,7 @@ class Client {
     }
 
     /**
-     * Gère les messages entrants
+     * Gère les messages entrants (supports wire-level batching)
      */
     messageHandler() {
         if (!this.Conn) return;
@@ -301,8 +301,18 @@ class Client {
             if (this.Done || !this.connected) return;
 
             try {
-                const data = JSON.parse(event.data);
-                this.handleMessage(data);
+                const parsed = JSON.parse(event.data);
+
+                // Detect if it's a batch (array) or single message (object)
+                if (Array.isArray(parsed)) {
+                    // Batch message: array of WsMessage
+                    for (const msg of parsed) {
+                        this.handleMessage(msg);
+                    }
+                } else {
+                    // Single message: WsMessage object
+                    this.handleMessage(parsed);
+                }
             } catch (error) {
                 console.error('WebSocket read error:', error);
                 this.connected = false;

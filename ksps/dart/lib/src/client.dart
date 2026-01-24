@@ -88,15 +88,27 @@ class KspsClient {
     }
   }
 
-  /// Start the message handler
+  /// Start the message handler (supports wire-level batching)
   void _startMessageHandler() {
     _channel?.stream.listen(
       (data) {
         if (_done || !_connected) return;
         
         try {
-          final json = jsonDecode(data as String) as Map<String, dynamic>;
-          _handleMessage(json);
+          final parsed = jsonDecode(data as String);
+          
+          // Detect if it's a batch (List) or single message (Map)
+          if (parsed is List) {
+            // Batch message: List of WsMessage
+            for (final msg in parsed) {
+              if (msg is Map<String, dynamic>) {
+                _handleMessage(msg);
+              }
+            }
+          } else if (parsed is Map<String, dynamic>) {
+            // Single message: WsMessage Map
+            _handleMessage(parsed);
+          }
         } catch (e) {
           print('WebSocket read error: $e');
           _connected = false;

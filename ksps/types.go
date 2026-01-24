@@ -10,6 +10,34 @@ import (
 	"github.com/kamalshkeir/ksmux/ws"
 )
 
+// WsMessage pool for zero-allocation message creation
+var wsMessagePool = sync.Pool{
+	New: func() interface{} {
+		return &WsMessage{}
+	},
+}
+
+// AcquireWsMessage gets a WsMessage from the pool
+func AcquireWsMessage() *WsMessage {
+	return wsMessagePool.Get().(*WsMessage)
+}
+
+// ReleaseWsMessage returns a WsMessage to the pool
+func ReleaseWsMessage(m *WsMessage) {
+	// Reset all fields
+	m.Action = ""
+	m.Topic = ""
+	m.From = ""
+	m.To = ""
+	m.ID = ""
+	m.Data = nil
+	m.Error = ""
+	m.AckID = ""
+	m.Status = nil
+	m.Responses = nil
+	wsMessagePool.Put(m)
+}
+
 // Bus - Le pub/sub le plus rapide possible en Go 1.24
 type Bus struct {
 	// Swiss Tables (Go 1.24) + unique handles pour performance maximale
@@ -67,15 +95,16 @@ type wsTopicData struct {
 	mu          sync.RWMutex
 }
 
-// wsConnection - Connection WebSocket optimisée
+// wsConnection - Connection WebSocket optimisée avec batching
 type wsConnection struct {
-	id     string
-	conn   *ws.Conn
-	topics map[unique.Handle[string]]bool // topics subscribed
-	sendCh chan WsMessage                 // buffered channel pour async send
-	stopCh chan struct{}
-	active atomic.Bool
-	mu     sync.RWMutex
+	id          string
+	conn        *ws.Conn
+	topics      map[unique.Handle[string]]bool // topics subscribed
+	sendCh      chan WsMessage                 // buffered channel pour async send (fallback)
+	stopCh      chan struct{}
+	batchWriter *BatchWriter // High-performance batched writer
+	active      atomic.Bool
+	mu          sync.RWMutex
 }
 
 // WsMessage - Message WebSocket optimisé

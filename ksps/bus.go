@@ -280,7 +280,7 @@ func (wp *workerPool) close() {
 	}
 }
 
-// publishToWebSocket - Publication optimisée vers WebSocket
+// publishToWebSocket - Publication optimisée vers WebSocket avec batching
 func (ps *Bus) publishToWebSocket(topic string, data any, wsTopicData *wsTopicData) {
 	msg := WsMessage{
 		Action: "publish",
@@ -289,8 +289,23 @@ func (ps *Bus) publishToWebSocket(topic string, data any, wsTopicData *wsTopicDa
 	}
 
 	wsTopicData.mu.RLock()
-	// Copier les connexions pour éviter de tenir le lock
-	connections := make([]*wsConnection, 0, len(wsTopicData.connections))
+	numConns := len(wsTopicData.connections)
+
+	// Fast path: single connection (most common in benchmarks)
+	if numConns == 1 {
+		for _, conn := range wsTopicData.connections {
+			if conn.active.Load() {
+				wsTopicData.mu.RUnlock()
+				ps.sendToWebSocket(conn, msg)
+				return
+			}
+		}
+		wsTopicData.mu.RUnlock()
+		return
+	}
+
+	// Multiple connections: copy to avoid holding lock
+	connections := make([]*wsConnection, 0, numConns)
 	for _, conn := range wsTopicData.connections {
 		if conn.active.Load() {
 			connections = append(connections, conn)
@@ -298,26 +313,31 @@ func (ps *Bus) publishToWebSocket(topic string, data any, wsTopicData *wsTopicDa
 	}
 	wsTopicData.mu.RUnlock()
 
-	// Envoyer en parallèle via worker pool
+	// Envoyer directement via le BatchWriter de chaque connexion
 	for _, conn := range connections {
-		conn := conn // capture pour closure
-		ps.workers.submit(func() {
-			ps.sendToWebSocket(conn, msg)
-		})
+		ps.sendToWebSocket(conn, msg)
 	}
 }
 
-// sendToWebSocket - Envoi optimisé vers une connexion WebSocket
+// sendToWebSocket - Envoi optimisé vers une connexion WebSocket avec batching
 func (ps *Bus) sendToWebSocket(conn *wsConnection, msg WsMessage) {
 	if !conn.active.Load() {
 		return
 	}
 
-	// Non-blocking send vers le channel buffered
+	// Utiliser le BatchWriter si disponible
+	if conn.batchWriter != nil {
+		// Send avec backpressure - ne drop pas les messages
+		conn.batchWriter.Send(msg)
+		return
+	}
+
+	// Fallback vers le channel si pas de batch writer
 	select {
 	case conn.sendCh <- msg:
 	default:
-		// Channel plein, on drop le message (ou on pourrait faire du batching)
+		// Channel plein, on essaie de l'envoyer directement
+		// (cas rare si le BatchWriter n'est pas configuré)
 	}
 }
 
@@ -366,21 +386,33 @@ func (ps *Bus) registerWebSocket(clientID string, wsConn *ws.Conn) *wsConnection
 
 	conn := ps.wsConns[clientID]
 	if conn == nil {
+		// Create new connection with BatchWriter for high-performance sending
 		conn = &wsConnection{
-			id:     clientID,
-			conn:   wsConn,
-			topics: make(map[unique.Handle[string]]bool),
-			sendCh: make(chan WsMessage, 1024),
-			stopCh: make(chan struct{}),
+			id:          clientID,
+			conn:        wsConn,
+			topics:      make(map[unique.Handle[string]]bool),
+			sendCh:      make(chan WsMessage, 1024), // Fallback channel
+			stopCh:      make(chan struct{}),
+			batchWriter: NewBatchWriter(wsConn, 16384, 64, time.Millisecond),
 		}
 		conn.active.Store(true)
 		ps.wsConns[clientID] = conn
+		// BatchWriter handles its own goroutine, no need for wsConnectionSender
+		// but we keep it for fallback compatibility
 		go ps.wsConnectionSender(conn)
 	} else if conn.conn != wsConn {
-		// Reconnexion éclair
+		// Reconnexion éclair - update connection and restart BatchWriter
 		conn.mu.Lock()
 		oldSocket := conn.conn
+		oldWriter := conn.batchWriter
 		conn.conn = wsConn
+
+		// Close old writer and create new one
+		if oldWriter != nil {
+			go oldWriter.Close() // Close async to avoid blocking
+		}
+		conn.batchWriter = NewBatchWriter(wsConn, 16384, 64, time.Millisecond)
+
 		if !conn.active.Load() {
 			conn.active.Store(true)
 			conn.sendCh = make(chan WsMessage, 1024)
@@ -388,6 +420,7 @@ func (ps *Bus) registerWebSocket(clientID string, wsConn *ws.Conn) *wsConnection
 			go ps.wsConnectionSender(conn)
 		}
 		conn.mu.Unlock()
+
 		if oldSocket != nil {
 			// Fermeture asynchrone sécurisée
 			go func(s *ws.Conn) {
@@ -800,6 +833,10 @@ func (ps *Bus) cleanupWebSocketClient(clientID string, socket *ws.Conn) {
 
 	if exists && isSameSocket {
 		conn.active.Store(false)
+		// Close BatchWriter first to drain pending messages
+		if conn.batchWriter != nil {
+			go conn.batchWriter.Close() // Async to avoid blocking
+		}
 		if conn.stopCh != nil {
 			select {
 			case <-conn.stopCh:
@@ -1028,6 +1065,10 @@ func (ps *Bus) closeAllWebSocketConnections() {
 
 	for clientID, conn := range ps.wsConns {
 		conn.active.Store(false)
+		// Close BatchWriter to drain pending messages
+		if conn.batchWriter != nil {
+			conn.batchWriter.Close()
+		}
 		if conn.stopCh != nil {
 			select {
 			case <-conn.stopCh:

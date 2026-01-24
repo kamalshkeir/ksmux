@@ -12,14 +12,14 @@ func (c *Conn) WriteJSON(v interface{}) error {
 	if m, ok := v.(ksmuxFastEncoder); ok {
 		data, err := m.MarshalKSMUX()
 		if err == nil {
-			return c.WriteMessage(TextMessage, data)
+			return c.WriteMessageDirect(TextMessage, data)
 		}
 	}
 	data, err := jsonencdec.DefaultMarshal(v)
 	if err != nil {
 		return err
 	}
-	return c.WriteMessage(TextMessage, data)
+	return c.WriteMessageDirect(TextMessage, data)
 }
 
 func (c *Conn) ReadJSON(v interface{}) error {
