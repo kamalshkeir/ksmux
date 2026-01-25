@@ -430,10 +430,10 @@ class Client {
 
         // Déballer si c'est un message imbriqué
         if (msgData && typeof msgData === 'object' && 'data' in msgData) {
-            msgData = msgData.data;
             if (!msgFrom && 'from' in msgData) {
                 msgFrom = msgData.from;
             }
+            msgData = msgData.data;
         }
 
         const sub = this.subscriptions.get(topic);
@@ -465,10 +465,10 @@ class Client {
 
         // Déballer si c'est un message imbriqué
         if (msgData && typeof msgData === 'object' && 'data' in msgData) {
-            msgData = msgData.data;
             if (!msgFrom && 'from' in msgData) {
                 msgFrom = msgData.from;
             }
+            msgData = msgData.data;
         }
 
         let sub = this.subscriptions.get(topic);
