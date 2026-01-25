@@ -52,8 +52,15 @@ func (ps *Bus) Close() {
 	ps.workers.close()
 }
 
+// Stop - Alias to Close
+func (ps *Bus) Stop() {
+	close(ps.done)
+	ps.closeAllWebSocketConnections()
+	ps.workers.close()
+}
+
 // Subscribe - Souscription ultra-rapide avec weak pointers
-func (ps *Bus) Subscribe(topic string, callback func(any, func())) func() {
+func (ps *Bus) Subscribe(topic string, callback func(Message, func())) func() {
 	topicHandle := unique.Make(topic)
 
 	// Créer le subscriber
@@ -166,7 +173,6 @@ func (ps *Bus) Publish(topic string, data any) {
 	topicData := ps.topics[topicHandle]
 	wsTopicData := ps.wsSubscribers[topicHandle]
 	ps.mu.RUnlock()
-
 	// Publier aux subscribers internes
 	if topicData != nil && topicData.active.Load() {
 		// Non-blocking send vers le channel buffered
@@ -183,18 +189,78 @@ func (ps *Bus) Publish(topic string, data any) {
 	}
 }
 
-// Wait - Attend tous les acknowledgments avec timeout
-func (ack *Ack) Wait() map[string]ackResponse {
-	if ack.Request == nil {
-		return make(map[string]ackResponse)
+// publishWithAck - Publication avec acknowledgment
+func (ps *Bus) publishWithAck(topic string, data any, timeout time.Duration) *Ack {
+	topicHandle := unique.Make(topic)
+	ackID := ps.generateAckID()
+
+	// Créer la requête ACK
+	ackReq := &ackRequest{
+		id:        ackID,
+		timestamp: time.Now(),
+		timeout:   timeout,
+		ackCh:     make(chan AckResponse, 100), // Buffer pour éviter blocking
+		clientIDs: make([]string, 0),
+		received:  make(map[string]bool),
 	}
 
-	responses := make(map[string]ackResponse)
-	timeout := time.After(ack.Request.timeout)
+	// Collecter les clients qui vont recevoir le message
+	ps.mu.RLock()
+	topicData := ps.topics[topicHandle]
+	wsTopicData := ps.wsSubscribers[topicHandle]
+	ps.mu.RUnlock()
+
+	var count int32
+	if wsTopicData != nil && wsTopicData.active.Load() {
+		wsTopicData.mu.RLock()
+		count += int32(len(wsTopicData.connections))
+		for clientID := range wsTopicData.connections {
+			ackReq.clientIDs = append(ackReq.clientIDs, clientID)
+			ackReq.received[clientID] = false
+		}
+		wsTopicData.mu.RUnlock()
+	}
+
+	if topicData != nil && topicData.active.Load() {
+		topicData.mu.RLock()
+		for _, weakSub := range topicData.subscribers {
+			if sub := weakSub.Value(); sub != nil && sub.active.Load() {
+				count++
+				clientID := fmt.Sprintf("internal_%d", sub.id)
+				ackReq.clientIDs = append(ackReq.clientIDs, clientID)
+				ackReq.received[clientID] = false
+			}
+		}
+		topicData.mu.RUnlock()
+	}
+	ackReq.remaining.Store(count)
+
+	// Enregistrer la requête ACK
+	ps.ackMu.Lock()
+	ps.ackRequests[ackID] = ackReq
+	ps.ackMu.Unlock()
+
+	// Publier le message avec ACK ID
+	ps.publishWithAckID(topic, data, ackID)
+
+	return &Ack{
+		id:      ackID,
+		request: ackReq,
+		bus:     ps,
+	}
+}
+
+func (ack *Ack) Wait() map[string]AckResponse {
+	if ack.request == nil || ack.request.remaining.Load() <= 0 {
+		return make(map[string]AckResponse)
+	}
+
+	responses := make(map[string]AckResponse)
+	timeout := time.After(ack.request.timeout)
 
 	for {
 		select {
-		case resp, ok := <-ack.Request.ackCh:
+		case resp, ok := <-ack.request.ackCh:
 			if !ok {
 				// Channel fermé = timeout
 				return responses
@@ -202,9 +268,9 @@ func (ack *Ack) Wait() map[string]ackResponse {
 			responses[resp.ClientID] = resp
 
 			// Vérifier si tous les ACK sont reçus (Optimisation O(1))
-			if ack.Request.remaining.Load() <= 0 {
+			if ack.request.remaining.Load() <= 0 {
 				// Plus besoin de garder l'ID en mémoire, on libère le bus
-				ack.Bus.cancelAck(ack.ID)
+				ack.bus.cancelAck(ack.id)
 				return responses
 			}
 
@@ -216,47 +282,47 @@ func (ack *Ack) Wait() map[string]ackResponse {
 }
 
 // WaitAny - Attend au moins un acknowledgment
-func (ack *Ack) WaitAny() (ackResponse, bool) {
-	if ack.Request == nil {
-		return ackResponse{}, false
+func (ack *Ack) WaitAny() (AckResponse, bool) {
+	if ack.request == nil || ack.request.remaining.Load() <= 0 {
+		return AckResponse{}, false
 	}
 
-	timeout := time.After(ack.Request.timeout)
+	timeout := time.After(ack.request.timeout)
 
 	select {
-	case resp, ok := <-ack.Request.ackCh:
+	case resp, ok := <-ack.request.ackCh:
 		return resp, ok
 	case <-timeout:
-		return ackResponse{}, false
+		return AckResponse{}, false
 	}
 }
 
 // GetStatus - Retourne le statut actuel des acknowledgments
 func (ack *Ack) GetStatus() map[string]bool {
-	if ack.Request == nil {
+	if ack.request == nil {
 		return make(map[string]bool)
 	}
 
-	ack.Request.mu.RLock()
-	status := make(map[string]bool, len(ack.Request.received))
-	for clientID, received := range ack.Request.received {
+	ack.request.mu.RLock()
+	status := make(map[string]bool, len(ack.request.received))
+	for clientID, received := range ack.request.received {
 		status[clientID] = received
 	}
-	ack.Request.mu.RUnlock()
+	ack.request.mu.RUnlock()
 
 	return status
 }
 
 // IsComplete - Vérifie si tous les ACK sont reçus
 func (ack *Ack) IsComplete() bool {
-	if ack.Request == nil {
+	if ack.request == nil {
 		return true
 	}
 
-	ack.Request.mu.RLock()
-	defer ack.Request.mu.RUnlock()
+	ack.request.mu.RLock()
+	defer ack.request.mu.RUnlock()
 
-	for _, received := range ack.Request.received {
+	for _, received := range ack.request.received {
 		if !received {
 			return false
 		}
@@ -266,10 +332,10 @@ func (ack *Ack) IsComplete() bool {
 
 // Cancel - Annule l'attente des acknowledgments
 func (ack *Ack) Cancel() {
-	if ack.Request == nil || ack.Bus == nil {
+	if ack.request == nil || ack.bus == nil {
 		return
 	}
-	ack.Bus.cancelAck(ack.ID)
+	ack.bus.cancelAck(ack.id)
 }
 
 // close - Ferme le worker pool
@@ -283,7 +349,7 @@ func (wp *workerPool) close() {
 // publishToWebSocket - Publication optimisée vers WebSocket avec batching
 func (ps *Bus) publishToWebSocket(topic string, data any, wsTopicData *wsTopicData) {
 	msg := WsMessage{
-		Action: "publish",
+		Action: publish,
 		Topic:  topic,
 		Data:   data,
 	}
@@ -684,9 +750,22 @@ func (ps *Bus) executeCallback(sub *subscriber, data any) {
 		sub.active.Store(false)
 		ps.unsubscribe(sub.id)
 	}
+	var msg Message
+	if m, ok := data.(Message); ok {
+		msg = m
+	} else {
+		msg = Message{Data: data, From: "internal"} // Default from
+	}
 
 	// Exécuter le callback
-	sub.callback(data, unsubFn)
+	sub.callback(msg, unsubFn)
+	if msg.internalAckID != "" {
+		ps.handleAck(AckResponse{
+			AckID:    msg.internalAckID,
+			ClientID: fmt.Sprintf("internal_%d", sub.id),
+			Success:  true,
+		})
+	}
 }
 
 // unsubscribe - Désabonnement optimisé avec Auto-Cleanup de Topic
@@ -893,51 +972,6 @@ func (ps *Bus) cleanupWebSocketClient(clientID string, socket *ws.Conn) {
 	}
 }
 
-// PublishWithAck - Publication avec acknowledgment
-func (ps *Bus) PublishWithAck(topic string, data any, timeout time.Duration) *Ack {
-	topicHandle := unique.Make(topic)
-	ackID := ps.generateAckID()
-
-	// Créer la requête ACK
-	ackReq := &ackRequest{
-		id:        ackID,
-		timestamp: time.Now(),
-		timeout:   timeout,
-		ackCh:     make(chan ackResponse, 100), // Buffer pour éviter blocking
-		clientIDs: make([]string, 0),
-		received:  make(map[string]bool),
-	}
-
-	// Collecter les clients qui vont recevoir le message
-	ps.mu.RLock()
-	wsTopicData := ps.wsSubscribers[topicHandle]
-	ps.mu.RUnlock()
-
-	if wsTopicData != nil && wsTopicData.active.Load() {
-		wsTopicData.mu.RLock()
-		ackReq.remaining.Store(int32(len(wsTopicData.connections)))
-		for clientID := range wsTopicData.connections {
-			ackReq.clientIDs = append(ackReq.clientIDs, clientID)
-			ackReq.received[clientID] = false
-		}
-		wsTopicData.mu.RUnlock()
-	}
-
-	// Enregistrer la requête ACK
-	ps.ackMu.Lock()
-	ps.ackRequests[ackID] = ackReq
-	ps.ackMu.Unlock()
-
-	// Publier le message avec ACK ID
-	ps.publishWithAckID(topic, data, ackID)
-
-	return &Ack{
-		ID:      ackID,
-		Request: ackReq,
-		Bus:     ps,
-	}
-}
-
 // publishWithAckID - Publication avec ID d'acknowledgment
 func (ps *Bus) publishWithAckID(topic string, data any, ackID string) {
 	topicHandle := unique.Make(topic)
@@ -948,10 +982,19 @@ func (ps *Bus) publishWithAckID(topic string, data any, ackID string) {
 	wsTopicData := ps.wsSubscribers[topicHandle]
 	ps.mu.RUnlock()
 
-	// Publier aux subscribers internes (pas d'ACK pour local)
+	// Publier aux subscribers internes
 	if topicData != nil && topicData.active.Load() {
+		internalData := data
+		if ackID != "" {
+			if m, ok := data.(Message); ok {
+				m.internalAckID = ackID
+				internalData = m
+			} else {
+				internalData = Message{Data: data, From: "internal", internalAckID: ackID}
+			}
+		}
 		select {
-		case topicData.eventCh <- data:
+		case topicData.eventCh <- internalData:
 		default:
 		}
 	}
@@ -990,7 +1033,7 @@ func (ps *Bus) publishToWebSocketWithAck(topic string, data any, ackID string, w
 }
 
 // handleAck - Traite un acknowledgment reçu
-func (ps *Bus) handleAck(ackResp ackResponse) {
+func (ps *Bus) handleAck(ackResp AckResponse) {
 	ps.ackMu.RLock()
 	ackReq := ps.ackRequests[ackResp.AckID]
 	ps.ackMu.RUnlock()

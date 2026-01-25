@@ -61,7 +61,7 @@ class ClientConnectOptions {
   final bool autorestart;
   final Duration restartEvery;
   final Function(Map<String, dynamic> data)? onDataWs;
-  final Function(Map<String, dynamic> data, ClientSubscriber unsub)? onId;
+  final Function(Map<String, dynamic> data)? onId;
   final VoidCallback? onClose;
 
   const ClientConnectOptions({

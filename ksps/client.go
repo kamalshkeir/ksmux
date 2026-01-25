@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,7 +19,7 @@ type Client struct {
 	Id           string
 	ServerAddr   string
 	onDataWS     func(data WsMessage, conn *ws.Conn) error
-	onId         func(data WsMessage, unsub ClientSubscriber)
+	onId         func(data Message)
 	onClose      func()
 	RestartEvery time.Duration
 	Conn         *ws.Conn
@@ -39,11 +40,11 @@ type Client struct {
 
 type clientSubscription struct {
 	topic    string
-	callback func(data any, unsub func())
+	callback func(data Message, unsub func())
 	active   atomic.Bool
 }
 
-type ClientConnectOptions struct {
+type ClientOptions struct {
 	Id           string
 	Address      string
 	Secure       bool
@@ -51,7 +52,7 @@ type ClientConnectOptions struct {
 	Autorestart  bool
 	RestartEvery time.Duration
 	OnDataWs     func(data WsMessage, conn *ws.Conn) error
-	OnId         func(data WsMessage, unsub ClientSubscriber)
+	OnID         func(data Message)
 	OnClose      func()
 }
 
@@ -67,7 +68,7 @@ func (subs ClientSubscriber) Unsubscribe() {
 	subs.client.Unsubscribe(subs.Topic)
 }
 
-func NewClient(opts ClientConnectOptions) (*Client, error) {
+func NewClient(opts ClientOptions) (*Client, error) {
 	if opts.Autorestart && opts.RestartEvery == 0 {
 		opts.RestartEvery = 10 * time.Second
 	}
@@ -79,7 +80,7 @@ func NewClient(opts ClientConnectOptions) (*Client, error) {
 		Autorestart:   opts.Autorestart,
 		RestartEvery:  opts.RestartEvery,
 		onDataWS:      opts.OnDataWs,
-		onId:          opts.OnId,
+		onId:          opts.OnID,
 		onClose:       opts.OnClose,
 		Done:          make(chan struct{}),
 		subscriptions: make(map[string]*clientSubscription),
@@ -100,20 +101,24 @@ func NewClient(opts ClientConnectOptions) (*Client, error) {
 	return cl, nil
 }
 
-func (client *Client) connect(opts ClientConnectOptions) error {
+func (client *Client) connect(opts ClientOptions) error {
 	sch := "ws"
 	if opts.Secure {
 		sch = "wss"
 	}
-	spath := ""
-	if opts.Path != "" {
-		spath = opts.Path
-	} else {
-		spath = "/ws/bus"
+	// Handle Path with potential query params
+	if opts.Path == "" {
+		opts.Path = "/ws/bus"
 	}
-	u := url.URL{Scheme: sch, Host: opts.Address, Path: spath}
-	client.ServerAddr = u.String()
-	c, resp, err := ws.DefaultDialer.Dial(u.String(), nil)
+
+	rawUrl := fmt.Sprintf("%s://%s%s", sch, opts.Address, opts.Path)
+	// Validate URL
+	_, err := url.Parse(rawUrl)
+	if err != nil {
+		return err
+	}
+	client.ServerAddr = rawUrl
+	c, resp, err := ws.DefaultDialer.Dial(rawUrl, nil)
 	if err != nil {
 		if err == ws.ErrBadHandshake && resp != nil {
 			lg.DebugC("handshake failed with status", "status", resp.StatusCode)
@@ -139,11 +144,11 @@ func (client *Client) connect(opts ClientConnectOptions) error {
 
 	// Ping initial pour enregistrer le client
 	client.sendMessage(WsMessage{
-		Action: "ping",
+		Action: ping,
 		From:   client.Id,
 	})
 
-	lg.Printfs("client connected to %s\n", u.String())
+	lg.Printfs("client connected to %s\n", client.ServerAddr)
 	return nil
 }
 
@@ -233,15 +238,7 @@ func (client *Client) handleMessage(data WsMessage) {
 
 	switch data.Action {
 	case "pong":
-		// Confirmation de connexion
-		if client.onId != nil {
-			if client.Id == "" && data.ID != "" {
-				client.Id = data.ID
-			}
-			client.onId(data, ClientSubscriber{client: client})
-		}
-
-	case "publish":
+	case publish:
 		// Message publié sur un topic
 		client.handlePublishMessage(data)
 
@@ -249,16 +246,24 @@ func (client *Client) handleMessage(data WsMessage) {
 		// Message publié avec demande d'ACK
 		client.handlePublishAckMessage(data)
 
-	case "direct_message":
+	case direct_message:
 		// Message direct vers ce client
 		if client.onId != nil {
-			client.onId(data, ClientSubscriber{client: client})
+			msgData := data.Data
+			msgFrom := data.From
+			if m, ok := data.Data.(map[string]any); ok {
+				if d, ok := m["data"]; ok {
+					msgData = d
+					if f, ok := m["from"].(string); ok && f != "" {
+						msgFrom = f
+					}
+				}
+			}
+			client.onId(Message{Data: msgData, From: msgFrom})
 		}
 
 	case "subscribed", "unsubscribed", "published":
 		// Confirmations - on peut les ignorer ou les logger
-		lg.DebugC("Received confirmation:", "action", data.Action)
-
 	case "error":
 		// Erreur du serveur
 		errMsg := data.Error
@@ -268,7 +273,7 @@ func (client *Client) handleMessage(data WsMessage) {
 			}
 		}
 		if errMsg != "" {
-			lg.DebugC("Server error:", "error", errMsg)
+			lg.ErrorC("Server error:", "error", errMsg)
 		}
 
 	case "ack_response":
@@ -309,7 +314,26 @@ func (client *Client) handlePublishMessage(data WsMessage) {
 
 		// Exécuter le callback inline (pas de goroutine pour éviter les allocations)
 		// Le message handler tourne déjà dans sa propre goroutine
-		sub.callback(data.Data, unsubFn)
+
+		// Déballer le message si nécessaire (aplatir la structure JSON reçue)
+		msgData := data.Data
+		msgFrom := data.From
+
+		if m, ok := data.Data.(map[string]any); ok {
+			// Vérifier si c'est une structure Message sérialisée
+			if d, ok := m["data"]; ok {
+				msgData = d
+				// Essayer de récupérer le from imbriqué
+				if f, ok := m["from"].(string); ok && f != "" {
+					msgFrom = f
+				}
+			}
+		}
+
+		sub.callback(Message{
+			Data: msgData,
+			From: msgFrom,
+		}, unsubFn)
 	}
 }
 
@@ -323,6 +347,20 @@ func (client *Client) handlePublishAckMessage(data WsMessage) {
 	sub := client.subscriptions[data.Topic]
 	client.subMu.RUnlock()
 
+	// Support pour PublishToIDWithAck : rediriger vers OnId si c'est un message direct avec ACK
+	isDirectAck := strings.HasPrefix(data.Topic, "__direct_"+client.Id)
+
+	if sub == nil && isDirectAck && client.onId != nil {
+		// Créer un subscriber temporaire mappé sur OnId
+		sub = &clientSubscription{
+			topic: data.Topic,
+			callback: func(msg Message, unsub func()) {
+				client.onId(msg)
+			},
+		}
+		sub.active.Store(true)
+	}
+
 	if sub != nil && sub.active.Load() {
 		// Créer fonction d'unsubscribe
 		unsubFn := func() {
@@ -333,6 +371,19 @@ func (client *Client) handlePublishAckMessage(data WsMessage) {
 		go func() {
 			var success = true
 			var errorMsg = ""
+
+			// Déballer le message si nécessaire
+			msgData := data.Data
+			msgFrom := data.From
+
+			if m, ok := data.Data.(map[string]any); ok {
+				if d, ok := m["data"]; ok {
+					msgData = d
+					if f, ok := m["from"].(string); ok && f != "" {
+						msgFrom = f
+					}
+				}
+			}
 
 			// Récupérer les panics
 			defer func() {
@@ -346,7 +397,10 @@ func (client *Client) handlePublishAckMessage(data WsMessage) {
 				}
 			}()
 
-			sub.callback(data.Data, unsubFn)
+			sub.callback(Message{
+				Data: msgData,
+				From: msgFrom,
+			}, unsubFn)
 		}()
 	} else if data.AckID != "" {
 		// Pas de subscriber, envoyer ACK d'erreur
@@ -357,7 +411,7 @@ func (client *Client) handlePublishAckMessage(data WsMessage) {
 // sendAck - Envoie un acknowledgment
 func (client *Client) sendAck(ackID string, success bool, errorMsg string) {
 	ackMsg := WsMessage{
-		Action: "ack",
+		Action: ack,
 		AckID:  ackID,
 		From:   client.Id,
 	}
@@ -377,7 +431,7 @@ func (client *Client) sendAck(ackID string, success bool, errorMsg string) {
 }
 
 // Subscribe - Souscription WebSocket optimisée
-func (client *Client) Subscribe(topic string, callback func(data any, unsub func())) func() {
+func (client *Client) Subscribe(topic string, callback func(data Message, unsub func())) (unsub func()) {
 	if !client.connected.Load() {
 		lg.DebugC("Cannot subscribe: client not connected")
 		return func() {}
@@ -396,7 +450,7 @@ func (client *Client) Subscribe(topic string, callback func(data any, unsub func
 
 	// Envoyer la demande de souscription au serveur
 	client.sendMessage(WsMessage{
-		Action: "subscribe",
+		Action: subscribe,
 		Topic:  topic,
 		From:   client.Id,
 	})
@@ -419,7 +473,7 @@ func (client *Client) Unsubscribe(topic string) {
 	if client.connected.Load() {
 		// Envoyer la demande de désabonnement au serveur
 		client.sendMessage(WsMessage{
-			Action: "unsubscribe",
+			Action: unsubscribe,
 			Topic:  topic,
 			From:   client.Id,
 		})
@@ -434,7 +488,7 @@ func (client *Client) Publish(topic string, data any) {
 	}
 
 	client.sendMessage(WsMessage{
-		Action: "publish",
+		Action: publish,
 		Topic:  topic,
 		Data:   data,
 		From:   client.Id,
@@ -449,27 +503,50 @@ func (client *Client) PublishToID(targetID string, data any) {
 	}
 
 	client.sendMessage(WsMessage{
-		Action: "direct_message",
+		Action: direct_message,
 		To:     targetID,
 		Data:   data,
 		From:   client.Id,
 	})
 }
 
-// PublishToServer - Envoi de message vers un serveur distant via le serveur local
-func (client *Client) PublishToServer(addr string, data any, secure ...bool) {
+// serverToserver - envoie message d'un autre serveur vers serveur actuel
+func (client *Client) serverToserver(toServer, proxyAddr string, data any) {
 	if !client.connected.Load() {
-		lg.DebugC("Cannot send to server: client not connected")
+		lg.DebugC("Cannot send serverToserver: client not connected")
 		return
+	}
+	client.sendMessage(WsMessage{
+		Action: server_to_server,
+		To:     toServer,
+		Data:   data,
+		ID:     proxyAddr,
+	})
+}
+
+// PublishToServer - Envoi de message vers un serveur distant via le serveur local
+// if toServer behind proxy 'bus.example.com'
+//
+//	address on server localhost:9999, addrWithPath="bus.example.com/ws/bus::localhost:9999"
+//	                               OR addrWithPath="bus.example.com::localhost:9999/ws/bus"
+func (client *Client) PublishToServer(addrWithPath string, data any, secure ...bool) {
+	if !client.connected.Load() {
+		lg.WarnC("Cannot send to server: client not connected")
+		return
+	}
+	var issecure bool
+	if len(secure) > 0 {
+		issecure = secure[0]
 	}
 
 	client.sendMessage(WsMessage{
-		Action: "publish_to_server",
-		To:     addr,
-		Data: map[string]any{
-			"data": data,
+		Action: publish_to_server,
+		To:     addrWithPath,
+		Data:   data,
+		From:   client.Id,
+		Status: map[string]bool{
+			"is_secure": issecure,
 		},
-		From: client.Id,
 	})
 }
 
@@ -477,16 +554,16 @@ func (client *Client) PublishToServer(addr string, data any, secure ...bool) {
 func (client *Client) PublishWithAck(topic string, data any, timeout time.Duration) *ClientAck {
 	if !client.connected.Load() {
 		lg.DebugC("Cannot publish with ACK: client not connected")
-		return &ClientAck{ID: "disconnected", cancelled: atomic.Bool{}}
+		return &ClientAck{id: "disconnected", cancelled: atomic.Bool{}}
 	}
 
 	ackID := client.generateAckID()
 
 	clientAck := &ClientAck{
-		ID:        ackID,
-		Client:    client,
+		id:        ackID,
+		client:    client,
 		timeout:   timeout,
-		responses: make(chan map[string]ackResponse, 1),
+		responses: make(chan map[string]AckResponse, 1),
 		status:    make(chan map[string]bool, 10),
 		done:      make(chan struct{}),
 	}
@@ -498,7 +575,7 @@ func (client *Client) PublishWithAck(topic string, data any, timeout time.Durati
 
 	// Envoyer la demande au serveur
 	client.sendMessage(WsMessage{
-		Action: "publish_with_ack",
+		Action: publish_with_ack,
 		Topic:  topic,
 		Data:   data,
 		AckID:  ackID,
@@ -512,16 +589,16 @@ func (client *Client) PublishWithAck(topic string, data any, timeout time.Durati
 func (client *Client) PublishToIDWithAck(targetID string, data any, timeout time.Duration) *ClientAck {
 	if !client.connected.Load() {
 		lg.DebugC("Cannot send direct message with ACK: client not connected")
-		return &ClientAck{ID: "disconnected", cancelled: atomic.Bool{}}
+		return &ClientAck{id: "disconnected", cancelled: atomic.Bool{}}
 	}
 
 	ackID := client.generateAckID()
 
 	clientAck := &ClientAck{
-		ID:        ackID,
-		Client:    client,
+		id:        ackID,
+		client:    client,
 		timeout:   timeout,
-		responses: make(chan map[string]ackResponse, 1),
+		responses: make(chan map[string]AckResponse, 1),
 		status:    make(chan map[string]bool, 10),
 		done:      make(chan struct{}),
 	}
@@ -533,7 +610,7 @@ func (client *Client) PublishToIDWithAck(targetID string, data any, timeout time
 
 	// Envoyer la demande au serveur
 	client.sendMessage(WsMessage{
-		Action: "publish_to_id_with_ack",
+		Action: publish_to_id_with_ack,
 		To:     targetID,
 		Data:   data,
 		AckID:  ackID,
@@ -586,10 +663,10 @@ func (client *Client) handleAckResponse(data WsMessage) {
 		// Fallback si Responses n'est pas utilisé (compatibilité)
 		if payload, ok := data.Data.(map[string]any); ok {
 			if responsesData, ok := payload["responses"].(map[string]any); ok {
-				responses := make(map[string]ackResponse)
+				responses := make(map[string]AckResponse)
 				for clientID, respData := range responsesData {
 					if respMap, ok := respData.(map[string]any); ok {
-						resp := ackResponse{
+						resp := AckResponse{
 							ClientID: clientID,
 						}
 						if success, ok := respMap["success"].(bool); ok {
@@ -677,14 +754,14 @@ func (client *Client) reconnect() {
 				path = u.Path
 			}
 
-			opts := ClientConnectOptions{
+			opts := ClientOptions{
 				Id:           client.Id,
 				Address:      addr,
 				Path:         path,
 				Autorestart:  client.Autorestart,
 				RestartEvery: client.RestartEvery,
 				OnDataWs:     client.onDataWS,
-				OnId:         client.onId,
+				OnID:         client.onId,
 				OnClose:      client.onClose,
 			}
 
@@ -708,7 +785,7 @@ func (client *Client) resubscribeAll() {
 	// Re-souscrire à tous les topics
 	for _, topic := range topics {
 		client.sendMessage(WsMessage{
-			Action: "subscribe",
+			Action: subscribe,
 			Topic:  topic,
 			From:   client.Id,
 		})
@@ -716,6 +793,84 @@ func (client *Client) resubscribeAll() {
 }
 
 func (client *Client) Close() error {
+	if client == nil {
+		return nil
+	}
+
+	// First, signal all goroutines to stop
+	client.connected.Store(false)
+
+	// Signal Done channel to stop messageHandler and messageSender
+	select {
+	case <-client.Done:
+		// Already closed
+	default:
+		close(client.Done)
+	}
+
+	// Give goroutines a moment to exit their read/write operations
+	// This prevents the race between Close() and ReadJSON()
+	time.Sleep(10 * time.Millisecond)
+
+	if client.onClose != nil {
+		client.onClose()
+	}
+
+	// Now safe to close the connection
+	client.subMu.Lock()
+	if client.Conn != nil {
+		func() {
+			defer func() { recover() }()
+			_ = client.Conn.WriteMessage(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""))
+			_ = client.Conn.Close()
+		}()
+		client.Conn = nil
+	}
+	client.subMu.Unlock()
+
+	return nil
+}
+
+func (client *Client) Stop() error {
+	if client == nil {
+		return nil
+	}
+
+	// First, signal all goroutines to stop
+	client.connected.Store(false)
+
+	// Signal Done channel to stop messageHandler and messageSender
+	select {
+	case <-client.Done:
+		// Already closed
+	default:
+		close(client.Done)
+	}
+
+	// Give goroutines a moment to exit their read/write operations
+	// This prevents the race between Close() and ReadJSON()
+	time.Sleep(10 * time.Millisecond)
+
+	if client.onClose != nil {
+		client.onClose()
+	}
+
+	// Now safe to close the connection
+	client.subMu.Lock()
+	if client.Conn != nil {
+		func() {
+			defer func() { recover() }()
+			_ = client.Conn.WriteMessage(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""))
+			_ = client.Conn.Close()
+		}()
+		client.Conn = nil
+	}
+	client.subMu.Unlock()
+
+	return nil
+}
+
+func (client *Client) Shutdown() error {
 	if client == nil {
 		return nil
 	}
@@ -773,10 +928,10 @@ func (client *Client) OnClose(fn func()) {
 	client.onClose = fn
 }
 
-// Wait - Attend tous les acknowledgments avec timeout (ClientAck)
-func (ack *ClientAck) Wait() map[string]ackResponse {
+// Wait - Attend tous les acknowledgments avec timeout (ClientAck)(clientID - Response)
+func (ack *ClientAck) Wait() map[string]AckResponse {
 	if ack.cancelled.Load() {
-		return make(map[string]ackResponse)
+		return make(map[string]AckResponse)
 	}
 
 	timeout := time.After(ack.timeout)
@@ -786,16 +941,16 @@ func (ack *ClientAck) Wait() map[string]ackResponse {
 		return responses
 	case <-timeout:
 		ack.Cancel()
-		return make(map[string]ackResponse)
+		return make(map[string]AckResponse)
 	case <-ack.done:
-		return make(map[string]ackResponse)
+		return make(map[string]AckResponse)
 	}
 }
 
 // WaitAny - Attend au moins un acknowledgment (ClientAck)
-func (ack *ClientAck) WaitAny() (ackResponse, bool) {
+func (ack *ClientAck) WaitAny() (AckResponse, bool) {
 	if ack.cancelled.Load() {
-		return ackResponse{}, false
+		return AckResponse{}, false
 	}
 
 	timeout := time.After(ack.timeout)
@@ -806,12 +961,12 @@ func (ack *ClientAck) WaitAny() (ackResponse, bool) {
 		for _, resp := range responses {
 			return resp, true
 		}
-		return ackResponse{}, false
+		return AckResponse{}, false
 	case <-timeout:
 		ack.Cancel()
-		return ackResponse{}, false
+		return AckResponse{}, false
 	case <-ack.done:
-		return ackResponse{}, false
+		return AckResponse{}, false
 	}
 }
 
@@ -822,10 +977,10 @@ func (ack *ClientAck) GetStatus() map[string]bool {
 	}
 
 	// Demander le statut au serveur
-	ack.Client.sendMessage(WsMessage{
-		Action: "get_ack_status",
-		AckID:  ack.ID,
-		From:   ack.Client.Id,
+	ack.client.sendMessage(WsMessage{
+		Action: get_ack_status,
+		AckID:  ack.id,
+		From:   ack.client.Id,
 	})
 
 	// Attendre la réponse du serveur
@@ -860,16 +1015,16 @@ func (ack *ClientAck) Cancel() {
 	ack.cancelled.Store(true)
 
 	// Envoyer la demande d'annulation au serveur
-	ack.Client.sendMessage(WsMessage{
-		Action: "cancel_ack",
-		AckID:  ack.ID,
-		From:   ack.Client.Id,
+	ack.client.sendMessage(WsMessage{
+		Action: cancel_ack,
+		AckID:  ack.id,
+		From:   ack.client.Id,
 	})
 
 	// Nettoyer localement
-	ack.Client.subMu.Lock()
-	delete(ack.Client.ackRequests, ack.ID)
-	ack.Client.subMu.Unlock()
+	ack.client.subMu.Lock()
+	delete(ack.client.ackRequests, ack.id)
+	ack.client.subMu.Unlock()
 
 	close(ack.done)
 }

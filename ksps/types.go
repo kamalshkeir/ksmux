@@ -118,7 +118,13 @@ type WsMessage struct {
 	Error     string                 `json:"error,omitempty"` // Pour compatibilité messages d'erreur
 	AckID     string                 `json:"ack_id,omitempty"`
 	Status    map[string]bool        `json:"status,omitempty"`
-	Responses map[string]ackResponse `json:"responses,omitempty"`
+	Responses map[string]AckResponse `json:"responses,omitempty"`
+}
+
+type Message struct {
+	Data          any    `json:"data"`
+	From          string `json:"from"`
+	internalAckID string
 }
 
 // ackRequest - Requête d'acknowledgment
@@ -127,14 +133,14 @@ type ackRequest struct {
 	id        string
 	timestamp time.Time
 	timeout   time.Duration
-	ackCh     chan ackResponse
+	ackCh     chan AckResponse
 	clientIDs []string        // clients qui doivent répondre
 	received  map[string]bool // clientID -> ack reçu
 	mu        sync.RWMutex
 }
 
-// ackResponse - Réponse d'acknowledgment
-type ackResponse struct {
+// AckResponse - Réponse d'acknowledgment
+type AckResponse struct {
 	AckID    string `json:"ack_id"`
 	ClientID string `json:"client_id"`
 	Success  bool   `json:"success"`
@@ -143,17 +149,17 @@ type ackResponse struct {
 
 // Ack - Handle pour attendre les acknowledgments (serveur)
 type Ack struct {
-	ID      string
-	Request *ackRequest
-	Bus     *Bus
+	id      string
+	request *ackRequest
+	bus     *Bus
 }
 
 // ClientAck - Handle pour attendre les acknowledgments côté client
 type ClientAck struct {
-	ID        string
-	Client    *Client
+	id        string
+	client    *Client
 	timeout   time.Duration
-	responses chan map[string]ackResponse // Réponses du serveur
+	responses chan map[string]AckResponse // Réponses du serveur
 	status    chan map[string]bool        // Statut du serveur
 	cancelled atomic.Bool
 	done      chan struct{}
@@ -162,7 +168,7 @@ type ClientAck struct {
 // subscriber - Structure optimisée
 type subscriber struct {
 	id       uint64
-	callback func(any, func())
+	callback func(Message, func())
 	topic    unique.Handle[string]
 	active   atomic.Bool
 }

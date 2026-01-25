@@ -27,15 +27,15 @@ class ClientSubscriber {
 
 class ClientAck {
     constructor(id, client, timeout, cancelled = false) {
-        this.ID = id;
-        this.Client = client;
-        this.timeout = timeout;
-        this.cancelled = cancelled;
-        this.responses = null;
-        this.status = null;
-        this.done = false;
-        this.responsePromise = null;
-        this.statusPromise = null;
+        this._id = id;           // privé
+        this._client = client;   // privé
+        this._timeout = timeout; // privé
+        this._cancelled = cancelled;
+        this._responses = null;
+        this._status = null;
+        this._done = false;
+        this._responsePromise = null;
+        this._statusPromise = null;
     }
 
     /**
@@ -43,7 +43,7 @@ class ClientAck {
      * @returns {Promise<Object>} Map des réponses
      */
     async Wait() {
-        if (this.cancelled || this.done) {
+        if (this._cancelled || this._done) {
             return {};
         }
 
@@ -51,9 +51,9 @@ class ClientAck {
             const timeoutId = setTimeout(() => {
                 this.Cancel();
                 resolve({});
-            }, this.timeout);
+            }, this._timeout);
 
-            this.responsePromise = (responses) => {
+            this._responsePromise = (responses) => {
                 clearTimeout(timeoutId);
                 resolve(responses);
             };
@@ -65,7 +65,7 @@ class ClientAck {
      * @returns {Promise<{response: Object, success: boolean}>}
      */
     async WaitAny() {
-        if (this.cancelled || this.done) {
+        if (this._cancelled || this._done) {
             return { response: {}, success: false };
         }
 
@@ -73,9 +73,9 @@ class ClientAck {
             const timeoutId = setTimeout(() => {
                 this.Cancel();
                 resolve({ response: {}, success: false });
-            }, this.timeout);
+            }, this._timeout);
 
-            this.responsePromise = (responses) => {
+            this._responsePromise = (responses) => {
                 clearTimeout(timeoutId);
                 // Retourner le premier ACK reçu
                 for (const [clientID, response] of Object.entries(responses)) {
@@ -92,15 +92,15 @@ class ClientAck {
      * @returns {Promise<Object>} Map du statut
      */
     async GetStatus() {
-        if (this.cancelled || this.done) {
+        if (this._cancelled || this._done) {
             return {};
         }
 
         // Demander le statut au serveur
-        this.Client.sendMessage({
+        this._client.sendMessage({
             action: 'get_ack_status',
-            ack_id: this.ID,
-            from: this.Client.Id
+            ack_id: this._id,
+            from: this._client.Id
         });
 
         return new Promise((resolve) => {
@@ -108,7 +108,7 @@ class ClientAck {
                 resolve({});
             }, 2000); // 2 secondes de timeout
 
-            this.statusPromise = (status) => {
+            this._statusPromise = (status) => {
                 clearTimeout(timeoutId);
                 resolve(status);
             };
@@ -133,48 +133,48 @@ class ClientAck {
      * Annule l'attente des acknowledgments
      */
     Cancel() {
-        if (this.cancelled || this.done) {
+        if (this._cancelled || this._done) {
             return;
         }
 
-        this.cancelled = true;
-        this.done = true;
+        this._cancelled = true;
+        this._done = true;
 
         // Envoyer la demande d'annulation au serveur
-        this.Client.sendMessage({
+        this._client.sendMessage({
             action: 'cancel_ack',
-            ack_id: this.ID,
-            from: this.Client.Id
+            ack_id: this._id,
+            from: this._client.Id
         });
 
         // Nettoyer localement
-        if (this.Client.ackRequests) {
-            this.Client.ackRequests.delete(this.ID);
+        if (this._client.ackRequests) {
+            this._client.ackRequests.delete(this._id);
         }
     }
 
     /**
-     * Traite une réponse ACK du serveur
+     * Traite une réponse ACK du serveur (internal use)
      * @param {Object} responses - Réponses reçues
      */
     handleResponse(responses) {
-        if (this.responsePromise) {
-            this.responsePromise(responses);
-            this.responsePromise = null;
+        if (this._responsePromise) {
+            this._responsePromise(responses);
+            this._responsePromise = null;
         }
-        this.responses = responses;
+        this._responses = responses;
     }
 
     /**
-     * Traite un statut ACK du serveur
+     * Traite un statut ACK du serveur (internal use)
      * @param {Object} status - Statut reçu
      */
     handleStatus(status) {
-        if (this.statusPromise) {
-            this.statusPromise(status);
-            this.statusPromise = null;
+        if (this._statusPromise) {
+            this._statusPromise(status);
+            this._statusPromise = null;
         }
-        this.status = status;
+        this._status = status;
     }
 }
 
@@ -373,10 +373,6 @@ class Client {
 
         switch (action) {
             case 'pong':
-                // Confirmation de connexion
-                if (this.onId) {
-                    this.onId(data, new ClientSubscriber(this));
-                }
                 break;
 
             case 'publish':
@@ -392,8 +388,8 @@ class Client {
             case 'direct_message':
                 // Message direct vers ce client
                 if (this.onId) {
-                    const payload = data.data;
-                    this.onId({ data: payload }, new ClientSubscriber(this));
+                    // Send simplified Message with just data and from
+                    this.onId({ data: data.data, from: data.from });
                 }
                 break;
 
@@ -441,7 +437,17 @@ class Client {
         const topic = data.topic;
         if (!topic) return;
 
-        const payload = data.data;
+        let msgData = data.data;
+        let msgFrom = data.from;
+
+        // Déballer si c'est un message imbriqué
+        if (msgData && typeof msgData === 'object' && 'data' in msgData) {
+            msgData = msgData.data;
+            if (!msgFrom && 'from' in msgData) {
+                msgFrom = msgData.from;
+            }
+        }
+
         const sub = this.subscriptions.get(topic);
 
         if (sub && sub.active) {
@@ -452,7 +458,7 @@ class Client {
 
             // Exécuter le callback
             setTimeout(() => {
-                sub.callback(payload, unsubFn);
+                sub.callback({ data: msgData, from: msgFrom }, unsubFn);
             }, 0);
         }
     }
@@ -465,9 +471,30 @@ class Client {
         const topic = data.topic;
         if (!topic) return;
 
-        const payload = data.data;
+        let msgData = data.data;
+        let msgFrom = data.from;
         const ackID = data.ack_id;
-        const sub = this.subscriptions.get(topic);
+
+        // Déballer si c'est un message imbriqué
+        if (msgData && typeof msgData === 'object' && 'data' in msgData) {
+            msgData = msgData.data;
+            if (!msgFrom && 'from' in msgData) {
+                msgFrom = msgData.from;
+            }
+        }
+
+        let sub = this.subscriptions.get(topic);
+
+        // Support pour PublishToIDWithAck : rediriger vers onId si c'est un message direct avec ACK
+        const isDirectAck = topic.startsWith(`__direct_${this.Id}`);
+        if (!sub && isDirectAck && this.onId) {
+            sub = {
+                active: true,
+                callback: (msg, unsub) => {
+                    this.onId(msg);
+                }
+            };
+        }
 
         if (sub && sub.active) {
             // Créer fonction d'unsubscribe
@@ -481,7 +508,7 @@ class Client {
                 let errorMsg = '';
 
                 try {
-                    await sub.callback(payload, unsubFn);
+                    await sub.callback({ data: msgData, from: msgFrom }, unsubFn);
                 } catch (error) {
                     success = false;
                     errorMsg = error.message || error.toString();
@@ -613,11 +640,13 @@ class Client {
 
     /**
      * Envoi de message vers un serveur distant via le serveur local
-     * @param {string} addr - Adresse du serveur distant
+     * @param {string} addrWithPath - Adresse du serveur distant. if toServer behind proxy 'bus.example.com'
+        address on server localhost:9999, addrWithPath="bus.example.com/ws/bus::localhost:9999"
+        OR addrWithPath="bus.example.com::localhost:9999/ws/bus"
      * @param {any} data - Données à envoyer
      * @param {boolean} secure - Utiliser HTTPS/WSS
      */
-    PublishToServer(addr, data, secure = false) {
+    PublishToServer(addrWithPath, data, secure = false) {
         if (!this.connected) {
             console.debug('Cannot send to server: client not connected');
             return;
@@ -625,9 +654,12 @@ class Client {
 
         this.sendMessage({
             action: 'publish_to_server',
-            to: addr,
+            to: addrWithPath,
             data: data,
-            from: this.Id
+            from: this.Id,
+            status: {
+                is_secure: secure
+            }
         });
     }
 

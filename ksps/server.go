@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,13 +19,14 @@ type ServerBus struct {
 	Bus          *Bus
 	WsMidws      []func(ksmux.Handler) ksmux.Handler
 	onUpgradeWS  func(r *http.Request) bool
-	onId         func(data WsMessage)
-	onServerData []func(data WsMessage, conn *ws.Conn)
+	onId         func(data Message)
+	onServerData []func(data Message)
 	router       *ksmux.Router
 
 	// WebSocket connections management
 	connections map[string]*ws.Conn // clientID -> connection
 	connMu      sync.RWMutex
+	Secure      bool // if run on https
 }
 
 var DefaultConfig = ksmux.Config{
@@ -48,7 +50,7 @@ func NewServer(config ...ksmux.Config) *ServerBus {
 		onUpgradeWS: func(r *http.Request) bool {
 			return true
 		},
-		onServerData: make([]func(data WsMessage, conn *ws.Conn), 0),
+		onServerData: make([]func(data Message), 0),
 	}
 }
 
@@ -64,16 +66,16 @@ func (sb *ServerBus) OnUpgradeWS(fn func(r *http.Request) bool) {
 	sb.onUpgradeWS = fn
 }
 
-func (sb *ServerBus) OnID(fn func(data WsMessage)) {
+func (sb *ServerBus) OnID(fn func(data Message)) {
 	sb.onId = fn
 }
 
-func (sb *ServerBus) OnServerData(fn func(data WsMessage, conn *ws.Conn)) {
+func (sb *ServerBus) OnServerData(fn func(data Message)) {
 	sb.onServerData = append(sb.onServerData, fn)
 }
 
 // Subscribe - Souscription locale (délègue au bus)
-func (sb *ServerBus) Subscribe(topic string, fn func(data any, unsub func())) func() {
+func (sb *ServerBus) Subscribe(topic string, fn func(data Message, unsub func())) (unsub func()) {
 	return sb.Bus.Subscribe(topic, fn)
 }
 
@@ -84,7 +86,10 @@ func (sb *ServerBus) Unsubscribe(topic string) {
 
 // Publish - Publication unifiée (délègue au bus)
 func (sb *ServerBus) Publish(topic string, data any) {
-	sb.Bus.Publish(topic, data)
+	sb.Bus.Publish(topic, Message{
+		Data: data,
+		From: sb.ID,
+	})
 }
 
 // PublishToID - Publication directe ultra-rapide via le registre du bus
@@ -93,21 +98,67 @@ func (sb *ServerBus) PublishToID(clientID string, data any) {
 	wsConn := sb.Bus.wsConns[clientID]
 	sb.Bus.wsConnsMu.RUnlock()
 
+	if clientID == sb.ID && sb.onId != nil {
+		if m, ok := data.(Message); ok {
+			sb.onId(m)
+		} else {
+			sb.onId(Message{
+				Data: data,
+				From: sb.ID,
+			})
+		}
+	}
+
 	if wsConn != nil {
-		sb.Bus.sendToWebSocket(wsConn, WsMessage{
-			Action: "direct_message",
+		msgToSend := WsMessage{
+			Action: direct_message,
 			Data:   data,
 			From:   sb.ID,
-		})
+		}
+
+		if m, ok := data.(Message); ok {
+			msgToSend = WsMessage{
+				Action: direct_message,
+				Data:   m.Data,
+				From:   m.From,
+			}
+		}
+		sb.Bus.sendToWebSocket(wsConn, msgToSend)
 	}
 }
 
 func (sb *ServerBus) PublishWithAck(topic string, data any, timeout time.Duration) *Ack {
-	return sb.Bus.PublishWithAck(topic, data, timeout)
+	return sb.Bus.publishWithAck(topic, Message{
+		Data: data,
+		From: sb.ID,
+	}, timeout)
 }
 
 func (sb *ServerBus) PublishToIDWithAck(clientID string, data any, timeout time.Duration) *Ack {
-	// Vérifier que la connexion existe
+	// Ne pas ré-envelopper si c'est déjà un Message
+	var msgToSend any = Message{
+		Data: data,
+		From: sb.ID,
+	}
+	if m, ok := data.(Message); ok {
+		msgToSend = m
+	}
+
+	// 1. Cas où la cible est le serveur lui-même
+	if clientID == sb.ID {
+		tempTopic := fmt.Sprintf("__direct_%s_%d", clientID, time.Now().UnixNano())
+		// Souscription interne temporaire
+		sb.Bus.Subscribe(tempTopic, func(m Message, unsub func()) {
+			if sb.onId != nil {
+				sb.onId(m)
+			}
+			unsub()
+		})
+		// Publier avec ACK
+		return sb.Bus.publishWithAck(tempTopic, msgToSend, timeout)
+	}
+
+	// 2. Cas où la cible est un client WebSocket
 	sb.connMu.RLock()
 	conn := sb.connections[clientID]
 	sb.connMu.RUnlock()
@@ -115,9 +166,9 @@ func (sb *ServerBus) PublishToIDWithAck(clientID string, data any, timeout time.
 	if conn == nil {
 		// Retourner un ACK vide si pas de connexion
 		return &Ack{
-			ID:      "no-connection",
-			Request: nil,
-			Bus:     sb.Bus,
+			id:      "no-connection",
+			request: nil,
+			bus:     sb.Bus,
 		}
 	}
 
@@ -128,7 +179,7 @@ func (sb *ServerBus) PublishToIDWithAck(clientID string, data any, timeout time.
 	sb.Bus.subscribeWebSocket(clientID, tempTopic, conn)
 
 	// Publier avec ACK
-	ack := sb.Bus.PublishWithAck(tempTopic, data, timeout)
+	ack := sb.Bus.publishWithAck(tempTopic, msgToSend, timeout)
 
 	// Nettoyer après timeout
 	go func() {
@@ -139,27 +190,38 @@ func (sb *ServerBus) PublishToIDWithAck(clientID string, data any, timeout time.
 	return ack
 }
 
-func (sb *ServerBus) PublishToServer(addr string, data any, secure ...bool) error {
-	return sb.PublishToServerWithFrom(addr, data, "", secure...)
+func (sb *ServerBus) PublishToServer(addrWithPath string, data any, secure ...bool) error {
+	return sb.publishToServerWithFrom(addrWithPath, data, "", secure...)
 }
 
-func (sb *ServerBus) PublishToServerWithFrom(addr string, data any, fromClient string, secure ...bool) error {
+func (sb *ServerBus) publishToServerWithFrom(addrWithPath string, data any, fromClient string, secure ...bool) error {
 	// Créer un client pour se connecter au serveur distant
-	address := addr
+	toAddress := addrWithPath
+	sp := strings.Split(addrWithPath, "::")
+	proxyAddr := ""
+	if len(sp) > 1 {
+		addrWithPath = sp[0]
+		proxyAddr = sp[1]
+	}
 	path := ""
-	if u, err := url.Parse(addr); err == nil && u.Host != "" {
-		// Si l'adresse est une URL complète ou contient un path
-		address = u.Host
-		path = u.Path
-	} else if u, err := url.Parse("ws://" + addr); err == nil {
-		// Tenter de parser comme "host/path" sans scheme
-		address = u.Host
-		path = u.Path
+
+	if strings.Contains(addrWithPath, "/") {
+		u, err := url.Parse("ws://" + addrWithPath)
+		if err == nil {
+			toAddress = u.Host
+			path = u.Path
+		}
+	}
+	if proxyAddr != "" && strings.Contains(proxyAddr, "/") {
+		u, err := url.Parse("ws://" + proxyAddr)
+		if err == nil {
+			path = u.Path
+		}
 	}
 
-	client, err := NewClient(ClientConnectOptions{
-		Id:      sb.ID + "-to-" + addr,
-		Address: address,
+	client, err := NewClient(ClientOptions{
+		Id:      "to-" + toAddress,
+		Address: toAddress,
 		Path:    path,
 		Secure:  len(secure) > 0 && secure[0],
 	})
@@ -168,17 +230,22 @@ func (sb *ServerBus) PublishToServerWithFrom(addr string, data any, fromClient s
 	}
 	defer client.Close()
 
-	// Préparer le message avec fromServer et fromClient
-	message := map[string]any{
-		"data":       data,
-		"fromServer": sb.ID,
+	currentCompleteAddress := "ws://"
+	if sb.Secure {
+		currentCompleteAddress = "wss://"
 	}
+	currentCompleteAddress += sb.router.Address() + sb.Path
 	if fromClient != "" {
-		message["fromClient"] = fromClient
+		currentCompleteAddress = fromClient + "---" + currentCompleteAddress
 	}
+	currentCompleteAddress = strings.ReplaceAll(currentCompleteAddress, ":443", "")
+	currentCompleteAddress = strings.ReplaceAll(currentCompleteAddress, ":80", "")
+	// Publier direct messsage on any topic, will be intercepted before actions on destination server
 
-	// Publier vers le serveur distant
-	client.PublishToID("server", message)
+	client.serverToserver(toAddress, proxyAddr, Message{
+		Data: data,
+		From: currentCompleteAddress,
+	})
 
 	// ATTENDRE que le message soit envoyé avant de Close (puisque c'est une connexion éphémère)
 	timeout := time.After(3 * time.Second)
@@ -189,7 +256,7 @@ drain:
 			break drain
 		default:
 			if len(client.messageQueue) == 0 {
-				time.Sleep(50 * time.Millisecond) // Un petit peu plus pour l'OS
+				time.Sleep(200 * time.Millisecond) // Un petit peu plus pour l'OS
 				break drain
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -217,7 +284,22 @@ func (sb *ServerBus) RunAutoTLS() {
 	sb.router.RunAutoTLS()
 }
 
+// Stop stop the server and close all connection
 func (sb *ServerBus) Stop() {
+	sb.closeAllConnections() // Fermer toutes les connexions WebSocket
+	sb.Bus.Close()           // Fermer le bus et arrêter toutes les goroutines
+	sb.router.Stop()
+}
+
+// Close alias to Stop
+func (sb *ServerBus) Close() {
+	sb.closeAllConnections() // Fermer toutes les connexions WebSocket
+	sb.Bus.Close()           // Fermer le bus et arrêter toutes les goroutines
+	sb.router.Stop()
+}
+
+// Shutdown alias to Stop
+func (sb *ServerBus) Shutdown() {
 	sb.closeAllConnections() // Fermer toutes les connexions WebSocket
 	sb.Bus.Close()           // Fermer le bus et arrêter toutes les goroutines
 	sb.router.Stop()
@@ -268,9 +350,59 @@ func (sb *ServerBus) handlerBusWs() ksmux.Handler {
 				break
 			}
 
-			// Traiter les callbacks utilisateur
-			for _, callback := range sb.onServerData {
-				callback(m, conn)
+			// messages coming from another server to current server
+			if m.Action == server_to_server {
+				isForMe := m.To == sb.router.Address() || m.To == sb.router.Config.Domain || m.ID == sb.router.Address() || m.To == sb.router.Host() || m.ID == sb.router.Host()
+
+				if isForMe {
+					// 1. Tenter de rediffuser sur le bus si un topic est présent dans les données
+					if dataMap, ok := m.Data.(map[string]any); ok {
+						var userPayload any = dataMap
+						var from string = m.From
+
+						// Si c'est encapsulé dans Message, on déballe
+						if d, ok := dataMap["data"]; ok {
+							userPayload = d
+							if f, ok := dataMap["from"].(string); ok {
+								from = f
+							}
+						}
+
+						// Vérifier si le payload utilisateur contient un topic pour publication
+						// Le format attendu pour une republication automatique est { "topic": "...", "data": ... }
+						if payloadMap, ok := userPayload.(map[string]any); ok {
+							if topic, ok := payloadMap["topic"].(string); ok {
+								dataContent := payloadMap["data"]
+
+								// Publier sur le bus local
+								sb.Bus.Publish(topic, Message{
+									Data: dataContent,
+									From: from,
+								})
+							}
+						}
+					}
+
+					// 2. Notifier les callbacks 'onServerData'
+					msg := Message{From: m.From}
+					if m.Data != nil {
+						msg.Data = m.Data
+					}
+					// Si encapsulé
+					if dataMap, ok := m.Data.(map[string]any); ok {
+						if d, ok := dataMap["data"]; ok {
+							msg.Data = d
+							if f, ok := dataMap["from"].(string); ok {
+								msg.From = f
+							}
+						}
+					}
+
+					for _, callback := range sb.onServerData {
+						callback(msg)
+					}
+					continue
+				}
 			}
 
 			// Traiter les actions du bus
@@ -287,37 +419,37 @@ func (sb *ServerBus) handleBusActions(data WsMessage, conn *ws.Conn, clientID *s
 	}
 
 	switch data.Action {
-	case "ping":
+	case ping:
 		sb.handlePing(data, conn, clientID)
 
-	case "subscribe":
+	case subscribe:
 		sb.handleSubscribe(data, conn, *clientID)
 
-	case "unsubscribe":
+	case unsubscribe:
 		sb.handleUnsubscribe(data, conn, *clientID)
 
-	case "publish":
+	case publish:
 		sb.handlePublish(data, conn, *clientID)
 
-	case "direct_message":
+	case direct_message:
 		sb.handleDirectMessage(data, conn, *clientID)
 
-	case "publish_to_server":
+	case publish_to_server:
 		sb.handlePublishToServer(data, conn, *clientID)
 
-	case "ack":
+	case ack:
 		sb.handleAck(data, conn, *clientID)
 
-	case "publish_with_ack":
+	case publish_with_ack:
 		sb.handlePublishWithAck(data, conn, *clientID)
 
-	case "publish_to_id_with_ack":
+	case publish_to_id_with_ack:
 		sb.handlePublishToIDWithAck(data, conn, *clientID)
 
-	case "get_ack_status":
+	case get_ack_status:
 		sb.handleGetAckStatus(data, conn, *clientID)
 
-	case "cancel_ack":
+	case cancel_ack:
 		sb.handleCancelAck(data, conn, *clientID)
 
 	default:
@@ -366,15 +498,21 @@ func (sb *ServerBus) handleDirectMessage(data WsMessage, conn *ws.Conn, clientID
 	}
 
 	// Si le message est pour le serveur
-	if data.To == sb.ID || data.To == "server" {
+	if data.To == sb.ID {
 		if sb.onId != nil {
-			sb.onId(data)
+			sb.onId(Message{
+				Data: data.Data,
+				From: data.From,
+			})
 		}
 		return
 	}
 
 	// Sinon, transférer vers le client cible
-	sb.PublishToID(data.To, data.Data)
+	sb.PublishToID(data.To, Message{
+		Data: data.Data,
+		From: data.From,
+	})
 }
 
 // handlePublishToServer - Gère les demandes de publication vers un serveur distant
@@ -384,13 +522,19 @@ func (sb *ServerBus) handlePublishToServer(data WsMessage, conn *ws.Conn, client
 		return
 	}
 
+	var isSecure bool
+	if sec, ok := data.Status["is_secure"]; ok {
+		isSecure = sec
+		data.Status = nil
+	}
+
 	if data.To == "" {
 		sb.sendError(conn, clientID, "missing target server address")
 		return
 	}
 
 	// Relayer vers le serveur distant avec fromServer
-	err := sb.PublishToServerWithFrom(data.To, data.Data, data.From)
+	err := sb.publishToServerWithFrom(data.To, data.Data, data.From, isSecure)
 	if err != nil {
 		sb.sendError(conn, clientID, "failed to relay to server: "+err.Error())
 		return
@@ -438,7 +582,7 @@ func (sb *ServerBus) handleAck(data WsMessage, conn *ws.Conn, clientID string) {
 	}
 
 	// Créer la réponse ACK
-	ackResp := ackResponse{
+	ackResp := AckResponse{
 		AckID:    ackID,
 		ClientID: clientID,
 		Success:  success,
@@ -506,7 +650,10 @@ func (sb *ServerBus) handlePublish(data WsMessage, conn *ws.Conn, clientID strin
 	}
 
 	// Publier via le bus unifié (va notifier TOUS les subscribers)
-	sb.Bus.Publish(data.Topic, data.Data)
+	sb.Bus.Publish(data.Topic, Message{
+		Data: data.Data,
+		From: data.From,
+	})
 
 	// Optionnel: confirmer la publication
 	sb.sendResponse(conn, clientID, WsMessage{
@@ -598,7 +745,10 @@ func (sb *ServerBus) handlePublishWithAck(data WsMessage, conn *ws.Conn, clientI
 	}
 
 	// Publier avec ACK via le bus
-	ack := sb.Bus.PublishWithAck(data.Topic, data.Data, 30*time.Second) // Timeout par défaut
+	ack := sb.Bus.publishWithAck(data.Topic, Message{
+		Data: data.Data,
+		From: data.From,
+	}, 5*time.Second) // Timeout par défaut
 
 	// Attendre les réponses et les renvoyer au client
 	go func() {
@@ -629,7 +779,10 @@ func (sb *ServerBus) handlePublishToIDWithAck(data WsMessage, conn *ws.Conn, cli
 	}
 
 	// Publier avec ACK via le bus
-	ack := sb.PublishToIDWithAck(data.To, data.Data, 30*time.Second)
+	ack := sb.PublishToIDWithAck(data.To, Message{
+		Data: data.Data,
+		From: data.From,
+	}, 5*time.Second)
 
 	// Attendre les réponses et les renvoyer au client
 	go func() {

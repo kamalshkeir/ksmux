@@ -41,19 +41,19 @@ class ClientSubscriber:
 @dataclass
 class ClientAck:
     """Handle pour attendre les acknowledgments côté client"""
-    ID: str
-    Client: 'Client'
-    timeout: float
-    cancelled: bool = False
-    responses: Optional[Dict[str, Any]] = None
-    status: Optional[Dict[str, bool]] = None
-    done: bool = False
+    _id: str                    # privé
+    _client: 'Client'           # privé
+    _timeout: float             # privé
+    _cancelled: bool = False
+    _responses: Optional[Dict[str, Any]] = None
+    _status: Optional[Dict[str, bool]] = None
+    _done: bool = False
     _response_future: Optional[asyncio.Future] = field(default=None, init=False)
     _status_future: Optional[asyncio.Future] = field(default=None, init=False)
 
     async def Wait(self) -> Dict[str, Any]:
         """Attend tous les acknowledgments avec timeout"""
-        if self.cancelled or self.done:
+        if self._cancelled or self._done:
             return {}
 
         try:
@@ -61,7 +61,7 @@ class ClientAck:
             self._response_future = asyncio.Future()
             
             # Attendre avec timeout
-            return await asyncio.wait_for(self._response_future, timeout=self.timeout)
+            return await asyncio.wait_for(self._response_future, timeout=self._timeout)
         except asyncio.TimeoutError:
             await self.Cancel()
             return {}
@@ -70,12 +70,12 @@ class ClientAck:
 
     async def WaitAny(self) -> tuple[Dict[str, Any], bool]:
         """Attend au moins un acknowledgment"""
-        if self.cancelled or self.done:
+        if self._cancelled or self._done:
             return {}, False
 
         try:
             self._response_future = asyncio.Future()
-            responses = await asyncio.wait_for(self._response_future, timeout=self.timeout)
+            responses = await asyncio.wait_for(self._response_future, timeout=self._timeout)
             
             # Retourner le premier ACK reçu
             for client_id, response in responses.items():
@@ -89,14 +89,14 @@ class ClientAck:
 
     async def GetStatus(self) -> Dict[str, bool]:
         """Retourne le statut actuel des acknowledgments"""
-        if self.cancelled or self.done:
+        if self._cancelled or self._done:
             return {}
 
         # Demander le statut au serveur
-        await self.Client.send_message({
+        await self._client.send_message({
             "action": "get_ack_status",
-            "ack_id": self.ID,
-            "from": self.Client.Id
+            "ack_id": self._id,
+            "from": self._client.Id
         })
 
         try:
@@ -114,22 +114,22 @@ class ClientAck:
 
     async def Cancel(self):
         """Annule l'attente des acknowledgments"""
-        if self.cancelled or self.done:
+        if self._cancelled or self._done:
             return
 
-        self.cancelled = True
-        self.done = True
+        self._cancelled = True
+        self._done = True
 
         # Envoyer la demande d'annulation au serveur
-        await self.Client.send_message({
+        await self._client.send_message({
             "action": "cancel_ack",
-            "ack_id": self.ID,
-            "from": self.Client.Id
+            "ack_id": self._id,
+            "from": self._client.Id
         })
 
         # Nettoyer localement
-        if self.Client.ack_requests and self.ID in self.Client.ack_requests:
-            del self.Client.ack_requests[self.ID]
+        if self._client.ack_requests and self._id in self._client.ack_requests:
+            del self._client.ack_requests[self._id]
 
         # Résoudre les futures en attente
         if self._response_future and not self._response_future.done():
@@ -138,16 +138,16 @@ class ClientAck:
             self._status_future.set_result({})
 
     def handle_response(self, responses: Dict[str, Any]):
-        """Traite une réponse ACK du serveur"""
+        """Traite une réponse ACK du serveur (internal use)"""
         if self._response_future and not self._response_future.done():
             self._response_future.set_result(responses)
-        self.responses = responses
+        self._responses = responses
 
     def handle_status(self, status: Dict[str, bool]):
-        """Traite un statut ACK du serveur"""
+        """Traite un statut ACK du serveur (internal use)"""
         if self._status_future and not self._status_future.done():
             self._status_future.set_result(status)
-        self.status = status
+        self._status = status
 
 
 class Client:
@@ -157,7 +157,7 @@ class Client:
         self.Id: str = ""
         self.ServerAddr: str = ""
         self.onDataWS: Optional[Callable[[Dict[str, Any], Any], None]] = None
-        self.onId: Optional[Callable[[Dict[str, Any], ClientSubscriber], None]] = None
+        self.onId: Optional[Callable[[Dict[str, Any]], None]] = None
         self.onClose: Optional[Callable[[], None]] = None
         self.RestartEvery: float = 10.0  # secondes
         self.Conn: Optional[websockets.WebSocketServerProtocol] = None
@@ -317,7 +317,7 @@ class Client:
         if action == "pong":
             # Confirmation de connexion
             if self.onId:
-                await self._run_callback(self.onId, data, ClientSubscriber(self))
+                # Send simplified Message with just data and from
 
         elif action == "publish":
             # Message publié sur un topic
@@ -330,8 +330,8 @@ class Client:
         elif action == "direct_message":
             # Message direct vers ce client
             if self.onId:
-                payload = data.get("data")
-                await self._run_callback(self.onId, {"data": payload}, ClientSubscriber(self))
+                # Send simplified Message with just data and from
+                await self._run_callback(self.onId, {"data": data.get("data"), "from": data.get("from")})
 
         elif action in ["subscribed", "unsubscribed", "published"]:
             # Confirmations - on peut les ignorer ou les logger
@@ -364,7 +364,17 @@ class Client:
         if not topic:
             return
 
-        payload = data.get("data")
+        msg_data = data.get("data")
+        msg_from = data.get("from")
+
+        # Déballer si c'est un message imbriqué (map)
+        if isinstance(msg_data, dict) and "data" in msg_data:
+            msg_data_inner = msg_data.get("data")
+            # Vérifier si 'from' existe dans le message imbriqué
+            if not msg_from and "from" in msg_data:
+                msg_from = msg_data.get("from")
+            msg_data = msg_data_inner
+
         sub = self.subscriptions.get(topic)
 
         if sub and sub.active:
@@ -373,7 +383,8 @@ class Client:
                 await self.Unsubscribe(topic)
 
             # Exécuter le callback dans le thread pool
-            await self._run_callback(sub.callback, payload, unsub_fn)
+            structured_data = {"data": msg_data, "from": msg_from}
+            await self._run_callback(sub.callback, structured_data, unsub_fn)
 
     async def handle_publish_ack_message(self, data: Dict[str, Any]):
         """Traite les messages publiés avec ACK"""
@@ -381,9 +392,29 @@ class Client:
         if not topic:
             return
 
-        payload = data.get("data")
+        msg_data = data.get("data")
+        msg_from = data.get("from")
         ack_id = data.get("ack_id")
+
+        # Déballer si c'est un message imbriqué (map)
+        if isinstance(msg_data, dict) and "data" in msg_data:
+            msg_data_inner = msg_data.get("data")
+            if not msg_from and "from" in msg_data:
+                msg_from = msg_data.get("from")
+            msg_data = msg_data_inner
+
         sub = self.subscriptions.get(topic)
+
+        # Support pour PublishToIDWithAck : rediriger vers onId si c'est un message direct avec ACK
+        is_direct_ack = topic.startswith(f"__direct_{self.Id}")
+        if not sub and is_direct_ack and self.onId:
+            # Créer un faux sub temporaire pour traiter le message via onId
+            async def temp_callback(msg, unsub):
+                if self.onId:
+                    # Appeler onId avec le message structuré
+                    await self._run_callback(self.onId, msg)
+            
+            sub = ClientSubscription(topic, temp_callback)
 
         if sub and sub.active:
             # Créer fonction d'unsubscribe
@@ -395,7 +426,8 @@ class Client:
             error_msg = ""
 
             try:
-                await self._run_callback(sub.callback, payload, unsub_fn)
+                structured_data = {"data": msg_data, "from": msg_from}
+                await self._run_callback(sub.callback, structured_data, unsub_fn)
             except Exception as e:
                 success = False
                 error_msg = str(e)
@@ -490,24 +522,29 @@ class Client:
             "from": self.Id
         })
 
-    async def PublishToServer(self, addr: str, data: Any, secure: bool = False):
-        """Envoi de message vers un serveur distant via le serveur local"""
+    async def PublishToServer(self, addrWithPath: str, data: Any, secure: bool = False):
+        """Envoi de message vers un serveur distant via le serveur local.if toServer behind proxy 'bus.example.com'
+        address on server localhost:9999, addrWithPath="bus.example.com/ws/bus::localhost:9999"
+        OR addrWithPath="bus.example.com::localhost:9999/ws/bus""""
         if not self.connected:
             logging.debug("Cannot send to server: client not connected")
             return
 
         await self.send_message({
             "action": "publish_to_server",
-            "to": addr,
+            "to": addrWithPath,
             "data": data,
-            "from": self.Id
+            "from": self.Id,
+            "status": {
+                "is_secure": secure
+            }
         })
 
     async def PublishWithAck(self, topic: str, data: Any, timeout: float = 30.0) -> ClientAck:
         """Publication avec acknowledgment via le serveur"""
         if not self.connected:
             logging.debug("Cannot publish with ACK: client not connected")
-            return ClientAck("disconnected", self, timeout, cancelled=True)
+            return ClientAck("disconnected", self, timeout, _cancelled=True)
 
         ack_id = self.generate_ack_id()
         client_ack = ClientAck(ack_id, self, timeout)
@@ -530,7 +567,7 @@ class Client:
         """Envoi de message direct avec acknowledgment"""
         if not self.connected:
             logging.debug("Cannot send direct message with ACK: client not connected")
-            return ClientAck("disconnected", self, timeout, cancelled=True)
+            return ClientAck("disconnected", self, timeout, _cancelled=True)
 
         ack_id = self.generate_ack_id()
         client_ack = ClientAck(ack_id, self, timeout)
@@ -710,7 +747,7 @@ async def main():
         Id="python-client",
         Address="localhost:9313",
         Autorestart=True,
-        OnId=lambda data, unsub: print(f"📬 Reçu: {data}"),
+        OnId=lambda data: print(f"📬 Reçu: {data}"),
         OnDataWs=lambda data, conn: print(f"🔔 Message: {data}")
     )
 

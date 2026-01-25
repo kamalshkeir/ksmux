@@ -19,7 +19,7 @@ class KspsClient {
   late Duration _restartEvery;
   
   Function(Map<String, dynamic> data)? _onDataWs;
-  Function(Map<String, dynamic> data, ClientSubscriber unsub)? _onId;
+  Function(Map<String, dynamic> data)? _onId;
   VoidCallback? _onClose;
   
   WebSocketChannel? _channel;
@@ -154,14 +154,6 @@ class KspsClient {
 
     switch (action) {
       case 'pong':
-        // Connection confirmed
-        if (_onId != null) {
-          _onId!(data, ClientSubscriber(
-            id: _id,
-            topic: '',
-            unsubscribeCallback: () {},
-          ));
-        }
         break;
 
       case 'publish':
@@ -174,12 +166,8 @@ class KspsClient {
 
       case 'direct_message':
         if (_onId != null) {
-          final payload = data['data'];
-          _onId!({'data': payload}, ClientSubscriber(
-            id: _id,
-            topic: '',
-            unsubscribeCallback: () {},
-          ));
+          // Send simplified Message with just data and from
+          _onId!({'data': data['data'], 'from': data['from']});
         }
         break;
 
@@ -220,6 +208,16 @@ class KspsClient {
     if (topic == null) return;
 
     final payload = data['data'];
+    var msgData = payload;
+    var msgFrom = data['from'];
+
+    if (payload is Map<String, dynamic> && payload.containsKey('data')) {
+      msgData = payload['data'];
+      if (msgFrom == null && payload.containsKey('from')) {
+        msgFrom = payload['from'];
+      }
+    }
+
     final subscription = _subscriptions[topic];
 
     if (subscription != null && subscription.active) {
@@ -227,7 +225,7 @@ class KspsClient {
       void unsubFn() => unsubscribe(topic);
       
       // Execute callback
-      Future.microtask(() => subscription.callback(payload, unsubFn));
+      Future.microtask(() => subscription.callback({'data': msgData, 'from': msgFrom}, unsubFn));
     }
   }
 
@@ -237,8 +235,30 @@ class KspsClient {
     if (topic == null) return;
 
     final payload = data['data'];
+
+    var msgData = payload;
+    var msgFrom = data['from'];
+
+    if (payload is Map<String, dynamic> && payload.containsKey('data')) {
+      msgData = payload['data'];
+      if (msgFrom == null && payload.containsKey('from')) {
+        msgFrom = payload['from'];
+      }
+    }
+
     final ackId = data['ack_id'] as String?;
-    final subscription = _subscriptions[topic];
+    final existingSub = _subscriptions[topic];
+    
+    // Support pour PublishToIDWithAck : rediriger vers onId si c'est un message direct avec ACK
+    ClientSubscription? subscription = existingSub;
+    if (subscription == null && topic.startsWith('__direct_$_id') && _onId != null) {
+      subscription = ClientSubscription(
+        topic: topic,
+        callback: (msg, unsub) {
+          _onId!(msg as Map<String, dynamic>);
+        },
+      );
+    }
 
     if (subscription != null && subscription.active) {
       void unsubFn() => unsubscribe(topic);
@@ -248,7 +268,7 @@ class KspsClient {
         String? errorMsg;
 
         try {
-          subscription.callback(payload, unsubFn);
+          subscription.callback({'data': msgData, 'from': msgFrom}, unsubFn);
         } catch (e) {
           success = false;
           errorMsg = e.toString();
@@ -415,7 +435,10 @@ class KspsClient {
   }
 
   /// Send message to a remote server
-  void publishToServer(String addr, dynamic data, {bool secure = false}) {
+  /// if toServer behind proxy 'bus.example.com'
+  /// address on server localhost:9999, addrWithPath="bus.example.com/ws/bus::localhost:9999"
+  /// OR addrWithPath="bus.example.com::localhost:9999/ws/bus"
+  void publishToServer(String addrWithPath, dynamic data, {bool secure = false}) {
     if (!_connected) {
       print('Cannot send to server: client not connected');
       return;
@@ -423,9 +446,12 @@ class KspsClient {
 
     _sendMessage(WsMessage(
       action: 'publish_to_server',
-      to: addr,
+      to: addrWithPath,
       data: data,
       from: _id,
+      status: {
+        'is_secure': secure,
+      },
     ));
   }
 
