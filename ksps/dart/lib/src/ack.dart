@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'types.dart';
+import 'client.dart';
 
 /// Client ACK handle for waiting acknowledgments
 class ClientAck {
@@ -14,10 +15,13 @@ class ClientAck {
   Map<String, AckResponse>? _responses;
   Map<String, bool>? _status;
 
+  final KspsClient? _client;
+
   ClientAck({
     required this.id,
     required this.timeout,
-  });
+    KspsClient? client,
+  }) : _client = client;
 
   /// Wait for all acknowledgments with timeout
   Future<Map<String, AckResponse>> wait() async {
@@ -55,8 +59,20 @@ class ClientAck {
       return _status ?? {};
     }
 
-    // Request status from server will be implemented in client
-    return _status ?? {};
+    if (_client != null) {
+       _client!.internalSendMessage(WsMessage(
+        action: 'get_ack_status',
+        ackId: id,
+        from: _client!.id,
+      ));
+    }
+
+    try {
+      // Wait for status update on the stream with a short timeout
+      return await statusStream.first.timeout(const Duration(seconds: 2));
+    } catch (_) {
+      return _status ?? {};
+    }
   }
 
   /// Check if all ACKs are received
@@ -72,6 +88,15 @@ class ClientAck {
     _cancelled = true;
     _completed = true;
     
+    if (_client != null) {
+      _client!.internalSendMessage(WsMessage(
+        action: 'cancel_ack',
+        ackId: id,
+        from: _client!.id,
+      ));
+      _client!.internalRemoveAckRequest(id);
+    }
+
     if (!_responseCompleter.isCompleted) {
       _responseCompleter.complete({});
     }

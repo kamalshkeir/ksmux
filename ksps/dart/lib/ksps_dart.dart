@@ -7,4 +7,3 @@ library ksps_dart;
 export 'src/client.dart';
 export 'src/types.dart';
 export 'src/ack.dart';
-export 'src/subscriber.dart'; 

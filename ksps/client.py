@@ -25,25 +25,15 @@ class ClientSubscription:
 
 
 @dataclass
-class ClientSubscriber:
-    """Équivalent du ClientSubscriber Go"""
-    client: 'Client'
-    Id: str = ""
-    Topic: str = ""
-    Ch: Optional[Any] = None  # Pas utilisé en Python
-    Conn: Optional[Any] = None  # Référence WebSocket
 
-    def Unsubscribe(self):
-        """Désabonne ce subscriber"""
-        asyncio.create_task(self.client.Unsubscribe(self.Topic))
 
 
 @dataclass
 class ClientAck:
     """Handle pour attendre les acknowledgments côté client"""
-    _id: str                    # privé
-    _client: 'Client'           # privé
-    _timeout: float             # privé
+    _id: str
+    _client: 'Client'
+    _timeout: float
     _cancelled: bool = False
     _responses: Optional[Dict[str, Any]] = None
     _status: Optional[Dict[str, bool]] = None
@@ -315,9 +305,7 @@ class Client:
             return
 
         if action == "pong":
-            # Confirmation de connexion
-            if self.onId:
-                # Send simplified Message with just data and from
+            pass
 
         elif action == "publish":
             # Message publié sur un topic
@@ -523,9 +511,11 @@ class Client:
         })
 
     async def PublishToServer(self, addrWithPath: str, data: Any, secure: bool = False):
-        """Envoi de message vers un serveur distant via le serveur local.if toServer behind proxy 'bus.example.com'
+        """Envoi de message vers un serveur distant via le serveur local.
+        if toServer behind proxy 'bus.example.com'
         address on server localhost:9999, addrWithPath="bus.example.com/ws/bus::localhost:9999"
-        OR addrWithPath="bus.example.com::localhost:9999/ws/bus""""
+        OR addrWithPath="bus.example.com::localhost:9999/ws/bus"
+        """
         if not self.connected:
             logging.debug("Cannot send to server: client not connected")
             return
@@ -601,7 +591,7 @@ class Client:
             return
 
         client_ack = self.ack_requests[ack_id]
-        if client_ack.cancelled:
+        if client_ack._cancelled:
             return
 
         responses = data.get("responses") or data.get("data", {}).get("responses", {})
@@ -615,7 +605,7 @@ class Client:
             return
 
         client_ack = self.ack_requests[ack_id]
-        if client_ack.cancelled:
+        if client_ack._cancelled:
             return
 
         status = data.get("status") or data.get("data", {}).get("status", {})

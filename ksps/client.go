@@ -56,18 +56,6 @@ type ClientOptions struct {
 	OnClose      func()
 }
 
-type ClientSubscriber struct {
-	client *Client
-	Id     string
-	Topic  string
-	Ch     chan map[string]any
-	Conn   *ws.Conn
-}
-
-func (subs ClientSubscriber) Unsubscribe() {
-	subs.client.Unsubscribe(subs.Topic)
-}
-
 func NewClient(opts ClientOptions) (*Client, error) {
 	if opts.Autorestart && opts.RestartEvery == 0 {
 		opts.RestartEvery = 10 * time.Second

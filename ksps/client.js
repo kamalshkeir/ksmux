@@ -11,19 +11,7 @@ class ClientSubscription {
     }
 }
 
-class ClientSubscriber {
-    constructor(client, id = '', topic = '') {
-        this.client = client;
-        this.Id = id;
-        this.Topic = topic;
-        this.Ch = null; // Pas utilisé en JS
-        this.Conn = null; // Référence WebSocket
-    }
 
-    Unsubscribe() {
-        this.client.Unsubscribe(this.Topic);
-    }
-}
 
 class ClientAck {
     constructor(id, client, timeout, cancelled = false) {
@@ -920,10 +908,10 @@ class Client {
 
 // Export pour utilisation en module
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { Client, ClientSubscriber, ClientSubscription, ClientAck };
+    module.exports = { Client, ClientSubscription, ClientAck };
 }
 
 // Export pour utilisation en navigateur
 if (typeof window !== 'undefined') {
-    window.BusClient = { Client, ClientSubscriber, ClientSubscription, ClientAck };
+    window.BusClient = { Client, ClientSubscription, ClientAck };
 } 

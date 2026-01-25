@@ -1,24 +1,14 @@
 name: ksps_dart
-description: Ultra-fast Dart/Flutter client for ksmux pub/sub system with identical API
+description: Ultra-fast Dart client for ksmux pub/sub system with identical API
 version: 1.0.0
 homepage: https://github.com/kamalshkeir/thebus
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
-  flutter: ">=3.0.0"
 
 dependencies:
-  flutter:
-    sdk: flutter
   web_socket_channel: ^2.4.0
-  json_annotation: ^4.8.1
 
 dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^3.0.0
-  json_serializable: ^6.7.1
-  build_runner: ^2.4.7
-
-flutter:
-  # No assets needed for this package 
+  lints: ^3.0.0
+  test: ^1.24.0

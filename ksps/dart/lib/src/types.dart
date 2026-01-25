@@ -1,18 +1,16 @@
-import 'dart:async';
-import 'package:json_annotation/json_annotation.dart';
 
-part 'types.g.dart';
+typedef VoidCallback = void Function();
 
 /// WebSocket message structure
-@JsonSerializable()
 class WsMessage {
   final String action;
   final String? topic;
   final dynamic data;
   final String? from;
   final String? to;
-  @JsonKey(name: 'ack_id')
   final String? ackId;
+  final Map<String, bool>? status;
+  final Map<String, dynamic>? responses;
 
   const WsMessage({
     required this.action,
@@ -21,20 +19,40 @@ class WsMessage {
     this.from,
     this.to,
     this.ackId,
+    this.status,
+    this.responses,
   });
 
-  factory WsMessage.fromJson(Map<String, dynamic> json) =>
-      _$WsMessageFromJson(json);
+  factory WsMessage.fromJson(Map<String, dynamic> json) {
+    return WsMessage(
+      action: json['action'] as String,
+      topic: json['topic'] as String?,
+      data: json['data'],
+      from: json['from'] as String?,
+      to: json['to'] as String?,
+      ackId: json['ack_id'] as String?,
+      status: json['status'] != null ? Map<String, bool>.from(json['status'] as Map) : null,
+      responses: json['responses'] != null ? Map<String, dynamic>.from(json['responses'] as Map) : null,
+    );
+  }
 
-  Map<String, dynamic> toJson() => _$WsMessageToJson(this);
+  Map<String, dynamic> toJson() {
+    return {
+      'action': action,
+      if (topic != null) 'topic': topic,
+      if (data != null) 'data': data,
+      if (from != null) 'from': from,
+      if (to != null) 'to': to,
+      if (ackId != null) 'ack_id': ackId,
+      if (status != null) 'status': status,
+      if (responses != null) 'responses': responses,
+    };
+  }
 }
 
 /// ACK response structure
-@JsonSerializable()
 class AckResponse {
-  @JsonKey(name: 'ack_id')
   final String ackId;
-  @JsonKey(name: 'client_id')
   final String clientId;
   final bool success;
   final String? error;
@@ -46,10 +64,23 @@ class AckResponse {
     this.error,
   });
 
-  factory AckResponse.fromJson(Map<String, dynamic> json) =>
-      _$AckResponseFromJson(json);
+  factory AckResponse.fromJson(Map<String, dynamic> json) {
+    return AckResponse(
+      ackId: json['ack_id'] as String,
+      clientId: json['client_id'] as String,
+      success: json['success'] as bool,
+      error: json['error'] as String?,
+    );
+  }
 
-  Map<String, dynamic> toJson() => _$AckResponseToJson(this);
+  Map<String, dynamic> toJson() {
+    return {
+      'ack_id': ackId,
+      'client_id': clientId,
+      'success': success,
+      if (error != null) 'error': error,
+    };
+  }
 }
 
 /// Client connection options
@@ -92,18 +123,3 @@ class ClientSubscription {
     this.active = true,
   });
 }
-
-/// Forward declaration for ClientSubscriber
-class ClientSubscriber {
-  final String id;
-  final String topic;
-  
-  ClientSubscriber({
-    required this.id,
-    required this.topic,
-  });
-  
-  void unsubscribe() {
-    // Implementation will be added in client.dart
-  }
-} 

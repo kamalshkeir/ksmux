@@ -7,7 +7,6 @@ import 'package:web_socket_channel/status.dart' as status;
 
 import 'types.dart';
 import 'ack.dart';
-import 'subscriber.dart';
 
 /// Ultra-fast Dart/Flutter client for ksmux pub/sub system
 class KspsClient {
@@ -21,7 +20,10 @@ class KspsClient {
   Function(Map<String, dynamic> data)? _onDataWs;
   Function(Map<String, dynamic> data)? _onId;
   VoidCallback? _onClose;
-  
+
+  String get id => _id;
+  set onId(Function(Map<String, dynamic> data)? value) => _onId = value;
+
   WebSocketChannel? _channel;
   bool _connected = false;
   bool _done = false;
@@ -225,7 +227,8 @@ class KspsClient {
       void unsubFn() => unsubscribe(topic);
       
       // Execute callback
-      Future.microtask(() => subscription.callback({'data': msgData, 'from': msgFrom}, unsubFn));
+      final callback = subscription.callback;
+      Future.microtask(() => callback({'data': msgData, 'from': msgFrom}, unsubFn));
     }
   }
 
@@ -263,12 +266,13 @@ class KspsClient {
     if (subscription != null && subscription.active) {
       void unsubFn() => unsubscribe(topic);
       
+      final callback = subscription.callback;
       Future.microtask(() async {
         bool success = true;
         String? errorMsg;
 
         try {
-          subscription.callback({'data': msgData, 'from': msgFrom}, unsubFn);
+          callback({'data': msgData, 'from': msgFrom}, unsubFn);
         } catch (e) {
           success = false;
           errorMsg = e.toString();
@@ -372,6 +376,7 @@ class KspsClient {
     final subscription = ClientSubscription(
       topic: topic,
       callback: callback,
+      active: true,
     );
     
     _subscriptions[topic] = subscription;
@@ -449,9 +454,6 @@ class KspsClient {
       to: addrWithPath,
       data: data,
       from: _id,
-      status: {
-        'is_secure': secure,
-      },
     ));
   }
 
@@ -459,11 +461,11 @@ class KspsClient {
   ClientAck publishWithAck(String topic, dynamic data, Duration timeout) {
     if (!_connected) {
       print('Cannot publish with ACK: client not connected');
-      return ClientAck(id: 'disconnected', timeout: timeout)..cancel();
+      return ClientAck(id: 'disconnected', timeout: timeout, client: this)..cancel();
     }
 
     final ackId = _generateAckId();
-    final clientAck = ClientAck(id: ackId, timeout: timeout);
+    final clientAck = ClientAck(id: ackId, timeout: timeout, client: this);
 
     _ackRequests[ackId] = clientAck;
 
@@ -482,11 +484,11 @@ class KspsClient {
   ClientAck publishToIdWithAck(String targetId, dynamic data, Duration timeout) {
     if (!_connected) {
       print('Cannot send direct message with ACK: client not connected');
-      return ClientAck(id: 'disconnected', timeout: timeout)..cancel();
+      return ClientAck(id: 'disconnected', timeout: timeout, client: this)..cancel();
     }
 
     final ackId = _generateAckId();
-    final clientAck = ClientAck(id: ackId, timeout: timeout);
+    final clientAck = ClientAck(id: ackId, timeout: timeout, client: this);
 
     _ackRequests[ackId] = clientAck;
 
@@ -561,9 +563,9 @@ class KspsClient {
     await _messageQueue.close();
   }
 
-  /// Get client ID
-  String get id => _id;
-
   /// Check if connected
   bool get isConnected => _connected;
-} 
+
+  void internalSendMessage(WsMessage msg) => _sendMessage(msg);
+  void internalRemoveAckRequest(String id) => _ackRequests.remove(id);
+}
