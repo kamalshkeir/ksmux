@@ -3,169 +3,6 @@
  * Traduction fidèle du client.go en JavaScript
  */
 
-class ClientSubscription {
-    constructor(topic, callback) {
-        this.topic = topic;
-        this.callback = callback;
-        this.active = true;
-    }
-}
-
-
-
-class ClientAck {
-    constructor(id, client, timeout, cancelled = false) {
-        this._id = id;           // privé
-        this._client = client;   // privé
-        this._timeout = timeout; // privé
-        this._cancelled = cancelled;
-        this._responses = null;
-        this._status = null;
-        this._done = false;
-        this._responsePromise = null;
-        this._statusPromise = null;
-    }
-
-    /**
-     * Attend tous les acknowledgments avec timeout
-     * @returns {Promise<Object>} Map des réponses
-     */
-    async Wait() {
-        if (this._cancelled || this._done) {
-            return {};
-        }
-
-        return new Promise((resolve) => {
-            const timeoutId = setTimeout(() => {
-                this.Cancel();
-                resolve({});
-            }, this._timeout);
-
-            this._responsePromise = (responses) => {
-                clearTimeout(timeoutId);
-                resolve(responses);
-            };
-        });
-    }
-
-    /**
-     * Attend au moins un acknowledgment
-     * @returns {Promise<{response: Object, success: boolean}>}
-     */
-    async WaitAny() {
-        if (this._cancelled || this._done) {
-            return { response: {}, success: false };
-        }
-
-        return new Promise((resolve) => {
-            const timeoutId = setTimeout(() => {
-                this.Cancel();
-                resolve({ response: {}, success: false });
-            }, this._timeout);
-
-            this._responsePromise = (responses) => {
-                clearTimeout(timeoutId);
-                // Retourner le premier ACK reçu
-                for (const [clientID, response] of Object.entries(responses)) {
-                    resolve({ response: response, success: true });
-                    return;
-                }
-                resolve({ response: {}, success: false });
-            };
-        });
-    }
-
-    /**
-     * Retourne le statut actuel des acknowledgments
-     * @returns {Promise<Object>} Map du statut
-     */
-    async GetStatus() {
-        if (this._cancelled || this._done) {
-            return {};
-        }
-
-        // Demander le statut au serveur
-        this._client.sendMessage({
-            action: 'get_ack_status',
-            ack_id: this._id,
-            from: this._client.Id
-        });
-
-        return new Promise((resolve) => {
-            const timeoutId = setTimeout(() => {
-                resolve({});
-            }, 2000); // 2 secondes de timeout
-
-            this._statusPromise = (status) => {
-                clearTimeout(timeoutId);
-                resolve(status);
-            };
-        });
-    }
-
-    /**
-     * Vérifie si tous les ACK sont reçus
-     * @returns {Promise<boolean>}
-     */
-    async IsComplete() {
-        const status = await this.GetStatus();
-        for (const received of Object.values(status)) {
-            if (!received) {
-                return false;
-            }
-        }
-        return Object.keys(status).length > 0;
-    }
-
-    /**
-     * Annule l'attente des acknowledgments
-     */
-    Cancel() {
-        if (this._cancelled || this._done) {
-            return;
-        }
-
-        this._cancelled = true;
-        this._done = true;
-
-        // Envoyer la demande d'annulation au serveur
-        this._client.sendMessage({
-            action: 'cancel_ack',
-            ack_id: this._id,
-            from: this._client.Id
-        });
-
-        // Nettoyer localement
-        if (this._client.ackRequests) {
-            this._client.ackRequests.delete(this._id);
-        }
-    }
-
-    /**
-     * Traite une réponse ACK du serveur (internal use)
-     * @param {Object} responses - Réponses reçues
-     */
-    handleResponse(responses) {
-        if (this._responsePromise) {
-            this._responsePromise(responses);
-            this._responsePromise = null;
-        }
-        this._responses = responses;
-    }
-
-    /**
-     * Traite un statut ACK du serveur (internal use)
-     * @param {Object} status - Statut reçu
-     */
-    handleStatus(status) {
-        if (this._statusPromise) {
-            this._statusPromise(status);
-            this._statusPromise = null;
-        }
-        this._status = status;
-    }
-}
-
 class Client {
     constructor() {
         this.Id = '';
@@ -193,6 +30,10 @@ class Client {
      * @returns {Promise<Client>}
      */
     static async NewClient(opts) {
+        if (!opts) {
+            opts = {};
+        }
+
         if (opts.Autorestart && !opts.RestartEvery) {
             opts.RestartEvery = 10000; // 10 secondes
         }
@@ -213,6 +54,241 @@ class Client {
         await client.connect(opts);
         this.client = client;
         return client;
+    }
+
+    /**
+    * Souscription WebSocket optimisée
+    * @param {string} topic - Topic à souscrire
+    * @param {Function} callback - Callback à exécuter
+    * @returns {Function} Fonction d'unsubscribe
+    */
+    Subscribe(topic, callback) {
+        if (!this.connected) {
+            console.debug('Cannot subscribe: client not connected');
+            return () => { };
+        }
+
+        // Créer la subscription locale
+        const sub = new ClientSubscription(topic, callback);
+        this.subscriptions.set(topic, sub);
+
+        // Envoyer la demande de souscription au serveur
+        this.sendMessage({
+            action: 'subscribe',
+            topic: topic,
+            from: this.Id
+        });
+
+        // Retourner fonction d'unsubscribe
+        return () => {
+            this.Unsubscribe(topic);
+        };
+    }
+
+    /**
+     * Désabonnement WebSocket
+     * @param {string} topic - Topic à désabonner
+     */
+    Unsubscribe(topic) {
+        const sub = this.subscriptions.get(topic);
+        if (sub) {
+            sub.active = false;
+            this.subscriptions.delete(topic);
+        }
+
+        if (this.connected) {
+            // Envoyer la demande de désabonnement au serveur
+            this.sendMessage({
+                action: 'unsubscribe',
+                topic: topic,
+                from: this.Id
+            });
+        }
+    }
+
+    /**
+     * Publication WebSocket optimisée
+     * @param {string} topic - Topic à publier
+     * @param {any} data - Données à publier
+     */
+    Publish(topic, data) {
+        if (!this.connected) {
+            console.debug('Cannot publish: client not connected');
+            return;
+        }
+
+        this.sendMessage({
+            action: 'publish',
+            topic: topic,
+            data: data,
+            from: this.Id
+        });
+    }
+
+    /**
+     * Envoi de message direct vers un ID (client ou serveur)
+     * @param {string} targetID - ID de la cible
+     * @param {any} data - Données à envoyer
+     */
+    PublishToID(targetID, data) {
+        if (!this.connected) {
+            console.debug('Cannot send direct message: client not connected');
+            return;
+        }
+
+        this.sendMessage({
+            action: 'direct_message',
+            to: targetID,
+            data: data,
+            from: this.Id
+        });
+    }
+
+    /**
+     * Envoi de message vers un serveur distant via le serveur local
+     * @param {string} addrWithPath - Adresse du serveur distant. if toServer behind proxy 'bus.example.com'
+        address on server localhost:9999, addrWithPath="bus.example.com/ws/bus::localhost:9999"
+        OR addrWithPath="bus.example.com::localhost:9999/ws/bus"
+     * @param {any} data - Données à envoyer
+     * @param {boolean} secure - Utiliser HTTPS/WSS
+     */
+    PublishToServer(addrWithPath, data, secure = false) {
+        if (!this.connected) {
+            console.debug('Cannot send to server: client not connected');
+            return;
+        }
+
+        this.sendMessage({
+            action: 'publish_to_server',
+            to: addrWithPath,
+            data: data,
+            from: this.Id,
+            status: {
+                is_secure: secure
+            }
+        });
+    }
+
+    /**
+     * Publication avec acknowledgment via le serveur
+     * @param {string} topic - Topic à publier
+     * @param {any} data - Données à publier
+     * @param {number} timeout - Timeout en millisecondes
+     * @returns {ClientAck} Handle pour attendre les ACK
+     */
+    PublishWithAck(topic, data, timeout = 30000) {
+        if (!this.connected) {
+            console.debug('Cannot publish with ACK: client not connected');
+            return new ClientAck('disconnected', this, timeout, true);
+        }
+
+        const ackID = this.generateAckID();
+        const clientAck = new ClientAck(ackID, this, timeout);
+
+        // Enregistrer l'ACK localement
+        if (!this.ackRequests) {
+            this.ackRequests = new Map();
+        }
+        this.ackRequests.set(ackID, clientAck);
+
+        // Envoyer la demande au serveur
+        this.sendMessage({
+            action: 'publish_with_ack',
+            topic: topic,
+            data: data,
+            ack_id: ackID,
+            from: this.Id
+        });
+
+        return clientAck;
+    }
+
+    /**
+     * Envoi de message direct avec acknowledgment
+     * @param {string} targetID - ID de la cible
+     * @param {any} data - Données à envoyer
+     * @param {number} timeout - Timeout en millisecondes
+     * @returns {ClientAck} Handle pour attendre les ACK
+     */
+    PublishToIDWithAck(targetID, data, timeout = 30000) {
+        if (!this.connected) {
+            console.debug('Cannot send direct message with ACK: client not connected');
+            return new ClientAck('disconnected', this, timeout, true);
+        }
+
+        const ackID = this.generateAckID();
+        const clientAck = new ClientAck(ackID, this, timeout);
+
+        // Enregistrer l'ACK localement
+        if (!this.ackRequests) {
+            this.ackRequests = new Map();
+        }
+        this.ackRequests.set(ackID, clientAck);
+
+        // Envoyer la demande au serveur
+        this.sendMessage({
+            action: 'publish_to_id_with_ack',
+            to: targetID,
+            data: data,
+            ack_id: ackID,
+            from: this.Id
+        });
+
+        return clientAck;
+    }
+
+    /**
+     * Ferme la connexion
+     * @returns {Promise<void>}
+     */
+    async Close() {
+        this.connected = false;
+        this.Done = true;
+
+        if (this.onClose) {
+            this.onClose();
+        }
+
+        if (this.Conn) {
+            try {
+                this.Conn.close(1000, 'Normal closure');
+            } catch (error) {
+                console.error('Error closing connection:', error);
+            }
+            this.Conn = null;
+        }
+
+        // Vider la queue de messages
+        this.messageQueue = [];
+    }
+
+    /**
+     * Lance le client en mode run (équivalent du Run() Go)
+     * En JavaScript, on utilise les event listeners du navigateur
+     */
+    Run() {
+        // Écouter les événements de fermeture de page
+        if (typeof window !== 'undefined') {
+            window.addEventListener('beforeunload', () => {
+                this.Close();
+            });
+
+            // Écouter Ctrl+C en mode console (Node.js)
+        } else if (typeof process !== 'undefined') {
+            process.on('SIGINT', () => {
+                console.log('Closed');
+                this.Close();
+                process.exit(0);
+            });
+        }
+    }
+
+    /**
+     * Définit le callback de fermeture
+     * @param {Function} fn - Fonction à exécuter à la fermeture
+     */
+    OnClose(fn) {
+        this.onClose = fn;
     }
 
     /**
@@ -539,187 +615,6 @@ class Client {
     }
 
     /**
-     * Souscription WebSocket optimisée
-     * @param {string} topic - Topic à souscrire
-     * @param {Function} callback - Callback à exécuter
-     * @returns {Function} Fonction d'unsubscribe
-     */
-    Subscribe(topic, callback) {
-        if (!this.connected) {
-            console.debug('Cannot subscribe: client not connected');
-            return () => { };
-        }
-
-        // Créer la subscription locale
-        const sub = new ClientSubscription(topic, callback);
-        this.subscriptions.set(topic, sub);
-
-        // Envoyer la demande de souscription au serveur
-        this.sendMessage({
-            action: 'subscribe',
-            topic: topic,
-            from: this.Id
-        });
-
-        // Retourner fonction d'unsubscribe
-        return () => {
-            this.Unsubscribe(topic);
-        };
-    }
-
-    /**
-     * Désabonnement WebSocket
-     * @param {string} topic - Topic à désabonner
-     */
-    Unsubscribe(topic) {
-        const sub = this.subscriptions.get(topic);
-        if (sub) {
-            sub.active = false;
-            this.subscriptions.delete(topic);
-        }
-
-        if (this.connected) {
-            // Envoyer la demande de désabonnement au serveur
-            this.sendMessage({
-                action: 'unsubscribe',
-                topic: topic,
-                from: this.Id
-            });
-        }
-    }
-
-    /**
-     * Publication WebSocket optimisée
-     * @param {string} topic - Topic à publier
-     * @param {any} data - Données à publier
-     */
-    Publish(topic, data) {
-        if (!this.connected) {
-            console.debug('Cannot publish: client not connected');
-            return;
-        }
-
-        this.sendMessage({
-            action: 'publish',
-            topic: topic,
-            data: data,
-            from: this.Id
-        });
-    }
-
-    /**
-     * Envoi de message direct vers un ID (client ou serveur)
-     * @param {string} targetID - ID de la cible
-     * @param {any} data - Données à envoyer
-     */
-    PublishToID(targetID, data) {
-        if (!this.connected) {
-            console.debug('Cannot send direct message: client not connected');
-            return;
-        }
-
-        this.sendMessage({
-            action: 'direct_message',
-            to: targetID,
-            data: data,
-            from: this.Id
-        });
-    }
-
-    /**
-     * Envoi de message vers un serveur distant via le serveur local
-     * @param {string} addrWithPath - Adresse du serveur distant. if toServer behind proxy 'bus.example.com'
-        address on server localhost:9999, addrWithPath="bus.example.com/ws/bus::localhost:9999"
-        OR addrWithPath="bus.example.com::localhost:9999/ws/bus"
-     * @param {any} data - Données à envoyer
-     * @param {boolean} secure - Utiliser HTTPS/WSS
-     */
-    PublishToServer(addrWithPath, data, secure = false) {
-        if (!this.connected) {
-            console.debug('Cannot send to server: client not connected');
-            return;
-        }
-
-        this.sendMessage({
-            action: 'publish_to_server',
-            to: addrWithPath,
-            data: data,
-            from: this.Id,
-            status: {
-                is_secure: secure
-            }
-        });
-    }
-
-    /**
-     * Publication avec acknowledgment via le serveur
-     * @param {string} topic - Topic à publier
-     * @param {any} data - Données à publier
-     * @param {number} timeout - Timeout en millisecondes
-     * @returns {ClientAck} Handle pour attendre les ACK
-     */
-    PublishWithAck(topic, data, timeout = 30000) {
-        if (!this.connected) {
-            console.debug('Cannot publish with ACK: client not connected');
-            return new ClientAck('disconnected', this, timeout, true);
-        }
-
-        const ackID = this.generateAckID();
-        const clientAck = new ClientAck(ackID, this, timeout);
-
-        // Enregistrer l'ACK localement
-        if (!this.ackRequests) {
-            this.ackRequests = new Map();
-        }
-        this.ackRequests.set(ackID, clientAck);
-
-        // Envoyer la demande au serveur
-        this.sendMessage({
-            action: 'publish_with_ack',
-            topic: topic,
-            data: data,
-            ack_id: ackID,
-            from: this.Id
-        });
-
-        return clientAck;
-    }
-
-    /**
-     * Envoi de message direct avec acknowledgment
-     * @param {string} targetID - ID de la cible
-     * @param {any} data - Données à envoyer
-     * @param {number} timeout - Timeout en millisecondes
-     * @returns {ClientAck} Handle pour attendre les ACK
-     */
-    PublishToIDWithAck(targetID, data, timeout = 30000) {
-        if (!this.connected) {
-            console.debug('Cannot send direct message with ACK: client not connected');
-            return new ClientAck('disconnected', this, timeout, true);
-        }
-
-        const ackID = this.generateAckID();
-        const clientAck = new ClientAck(ackID, this, timeout);
-
-        // Enregistrer l'ACK localement
-        if (!this.ackRequests) {
-            this.ackRequests = new Map();
-        }
-        this.ackRequests.set(ackID, clientAck);
-
-        // Envoyer la demande au serveur
-        this.sendMessage({
-            action: 'publish_to_id_with_ack',
-            to: targetID,
-            data: data,
-            ack_id: ackID,
-            from: this.Id
-        });
-
-        return clientAck;
-    }
-
-    /**
      * Génère un ID unique pour ACK côté client
      * @returns {string}
      */
@@ -835,60 +730,6 @@ class Client {
     }
 
     /**
-     * Ferme la connexion
-     * @returns {Promise<void>}
-     */
-    async Close() {
-        this.connected = false;
-        this.Done = true;
-
-        if (this.onClose) {
-            this.onClose();
-        }
-
-        if (this.Conn) {
-            try {
-                this.Conn.close(1000, 'Normal closure');
-            } catch (error) {
-                console.error('Error closing connection:', error);
-            }
-            this.Conn = null;
-        }
-
-        // Vider la queue de messages
-        this.messageQueue = [];
-    }
-
-    /**
-     * Lance le client en mode run (équivalent du Run() Go)
-     * En JavaScript, on utilise les event listeners du navigateur
-     */
-    Run() {
-        // Écouter les événements de fermeture de page
-        if (typeof window !== 'undefined') {
-            window.addEventListener('beforeunload', () => {
-                this.Close();
-            });
-
-            // Écouter Ctrl+C en mode console (Node.js)
-        } else if (typeof process !== 'undefined') {
-            process.on('SIGINT', () => {
-                console.log('Closed');
-                this.Close();
-                process.exit(0);
-            });
-        }
-    }
-
-    /**
-     * Définit le callback de fermeture
-     * @param {Function} fn - Fonction à exécuter à la fermeture
-     */
-    OnClose(fn) {
-        this.onClose = fn;
-    }
-
-    /**
      * Utilitaire pour attendre
      * @param {number} ms - Millisecondes à attendre
      * @returns {Promise<void>}
@@ -903,6 +744,168 @@ class Client {
      */
     static generateID() {
         return 'client_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    }
+}
+
+
+class ClientSubscription {
+    constructor(topic, callback) {
+        this.topic = topic;
+        this.callback = callback;
+        this.active = true;
+    }
+}
+
+class ClientAck {
+    constructor(id, client, timeout, cancelled = false) {
+        this._id = id;           // privé
+        this._client = client;   // privé
+        this._timeout = timeout; // privé
+        this._cancelled = cancelled;
+        this._responses = null;
+        this._status = null;
+        this._done = false;
+        this._responsePromise = null;
+        this._statusPromise = null;
+    }
+
+    /**
+     * Attend tous les acknowledgments avec timeout
+     * @returns {Promise<Object>} Map des réponses
+     */
+    async Wait() {
+        if (this._cancelled || this._done) {
+            return {};
+        }
+
+        return new Promise((resolve) => {
+            const timeoutId = setTimeout(() => {
+                this.Cancel();
+                resolve({});
+            }, this._timeout);
+
+            this._responsePromise = (responses) => {
+                clearTimeout(timeoutId);
+                resolve(responses);
+            };
+        });
+    }
+
+    /**
+     * Attend au moins un acknowledgment
+     * @returns {Promise<{response: Object, success: boolean}>}
+     */
+    async WaitAny() {
+        if (this._cancelled || this._done) {
+            return { response: {}, success: false };
+        }
+
+        return new Promise((resolve) => {
+            const timeoutId = setTimeout(() => {
+                this.Cancel();
+                resolve({ response: {}, success: false });
+            }, this._timeout);
+
+            this._responsePromise = (responses) => {
+                clearTimeout(timeoutId);
+                // Retourner le premier ACK reçu
+                for (const [clientID, response] of Object.entries(responses)) {
+                    resolve({ response: response, success: true });
+                    return;
+                }
+                resolve({ response: {}, success: false });
+            };
+        });
+    }
+
+    /**
+     * Retourne le statut actuel des acknowledgments
+     * @returns {Promise<Object>} Map du statut
+     */
+    async GetStatus() {
+        if (this._cancelled || this._done) {
+            return {};
+        }
+
+        // Demander le statut au serveur
+        this._client.sendMessage({
+            action: 'get_ack_status',
+            ack_id: this._id,
+            from: this._client.Id
+        });
+
+        return new Promise((resolve) => {
+            const timeoutId = setTimeout(() => {
+                resolve({});
+            }, 2000); // 2 secondes de timeout
+
+            this._statusPromise = (status) => {
+                clearTimeout(timeoutId);
+                resolve(status);
+            };
+        });
+    }
+
+    /**
+     * Vérifie si tous les ACK sont reçus
+     * @returns {Promise<boolean>}
+     */
+    async IsComplete() {
+        const status = await this.GetStatus();
+        for (const received of Object.values(status)) {
+            if (!received) {
+                return false;
+            }
+        }
+        return Object.keys(status).length > 0;
+    }
+
+    /**
+     * Annule l'attente des acknowledgments
+     */
+    Cancel() {
+        if (this._cancelled || this._done) {
+            return;
+        }
+
+        this._cancelled = true;
+        this._done = true;
+
+        // Envoyer la demande d'annulation au serveur
+        this._client.sendMessage({
+            action: 'cancel_ack',
+            ack_id: this._id,
+            from: this._client.Id
+        });
+
+        // Nettoyer localement
+        if (this._client.ackRequests) {
+            this._client.ackRequests.delete(this._id);
+        }
+    }
+
+    /**
+     * Traite une réponse ACK du serveur (internal use)
+     * @param {Object} responses - Réponses reçues
+     */
+    handleResponse(responses) {
+        if (this._responsePromise) {
+            this._responsePromise(responses);
+            this._responsePromise = null;
+        }
+        this._responses = responses;
+    }
+
+    /**
+     * Traite un statut ACK du serveur (internal use)
+     * @param {Object} status - Statut reçu
+     */
+    handleStatus(status) {
+        if (this._statusPromise) {
+            this._statusPromise(status);
+            this._statusPromise = null;
+        }
+        this._status = status;
     }
 }
 
