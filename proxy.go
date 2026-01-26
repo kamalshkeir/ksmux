@@ -99,6 +99,20 @@ func proxyMid() func(http.Handler) http.Handler {
 			host = strings.TrimSuffix(host, ":")
 
 			if v, ok := GetFirstRouter().proxies.Get(host); ok {
+				if router, ok := v.(*Router); ok {
+					var h http.Handler = router
+					if len(router.middlewares) > 0 {
+						for i := range router.middlewares {
+							if i == 0 {
+								h = router.middlewares[0](router)
+							} else {
+								h = router.middlewares[i](h)
+							}
+						}
+					}
+					h.ServeHTTP(w, r)
+					return
+				}
 				v.ServeHTTP(w, r)
 				return
 			}
