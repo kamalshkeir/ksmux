@@ -14,8 +14,9 @@ class Client {
         this.onClose = null;
         this.RestartEvery = 10000; // 10 secondes en ms
         this.Conn = null;
-        this.Autorestart = false;
+        this.AutoRestart = false;
         this.Done = false;
+        this.isReconnecting = false; // Flag to prevent multiple reconnection attempts
 
         // Optimisations pour pub/sub
         this.subscriptions = new Map(); // topic -> ClientSubscription
@@ -34,7 +35,7 @@ class Client {
             opts = {};
         }
 
-        if (opts.Autorestart && !opts.RestartEvery) {
+        if (opts.AutoRestart && !opts.RestartEvery) {
             opts.RestartEvery = 10000; // 10 secondes
         }
         if (!opts.OnDataWs) {
@@ -46,7 +47,7 @@ class Client {
         client.Address = opts.Address || window.location.host;
         client.Path = opts.Path || '/ws/bus';
         client.Secure = opts.Secure || false;
-        client.Autorestart = opts.Autorestart || false;
+        client.AutoRestart = opts.AutoRestart || false;
         client.RestartEvery = opts.RestartEvery || 10000;
         client.onDataWS = opts.OnDataWs;
         client.onId = opts.OnId;
@@ -307,6 +308,7 @@ class Client {
             await new Promise((resolve, reject) => {
                 this.Conn.onopen = () => {
                     this.connected = true;
+                    this.isReconnecting = false; // Reset flag on successful connection
                     console.log(`client connected to ${url}`);
 
                     // Démarrer les handlers
@@ -323,28 +325,31 @@ class Client {
                 };
 
                 this.Conn.onerror = (error) => {
-                    if (this.Autorestart) {
-                        console.log(`Connection failed, retrying in ${this.RestartEvery / 1000} seconds`);
-                        setTimeout(() => {
-                            this.connect(opts).then(resolve).catch(reject);
-                        }, this.RestartEvery);
-                    } else {
-                        reject(error);
-                    }
+                    // Don't handle reconnection here, let onclose handle it
+                    this.connected = false;
                 };
 
                 this.Conn.onclose = (event) => {
                     this.connected = false;
-                    if (this.Autorestart && !this.Done) {
+                    // Reset flag so next close can trigger reconnect
+                    const wasReconnecting = this.isReconnecting;
+                    this.isReconnecting = false;
+
+                    if (this.AutoRestart && !this.Done) {
+                        console.log(`Connection closed, retrying in ${this.RestartEvery / 1000} seconds`);
                         setTimeout(() => {
                             this.reconnect(opts);
                         }, this.RestartEvery);
+                    }
+                    // Only reject if initial connection failed (not reconnects)
+                    if (!this.AutoRestart && !wasReconnecting) {
+                        reject(new Error('Connection closed'));
                     }
                 };
             });
 
         } catch (error) {
-            if (this.Autorestart) {
+            if (this.AutoRestart) {
                 console.log(`Connection failed, retrying in ${this.RestartEvery / 1000} seconds`);
                 setTimeout(() => {
                     return this.connect(opts);
@@ -380,18 +385,17 @@ class Client {
             } catch (error) {
                 console.error('WebSocket read error:', error);
                 this.connected = false;
-                if (this.Autorestart) {
+                if (this.AutoRestart && !this.isReconnecting) {
+                    this.isReconnecting = true;
                     this.reconnect();
                 }
             }
         };
 
         this.Conn.onerror = (error) => {
-            console.error('WebSocket read error:', error);
+            console.error('WebSocket error:', error);
             this.connected = false;
-            if (this.Autorestart) {
-                this.reconnect();
-            }
+            // Don't reconnect here, let onclose handle it
         };
     }
 
@@ -686,7 +690,7 @@ class Client {
      * @param {Object} opts - Options de connexion
      */
     async reconnect(opts = null) {
-        if (!this.Autorestart) return;
+        if (!this.AutoRestart) return;
 
         await this.sleep(this.RestartEvery);
 
@@ -696,7 +700,7 @@ class Client {
                 Id: this.Id,
                 Address: this.Address.replace(/^wss?:\/\//, '').replace(/\/.*$/, ''),
                 Secure: this.Address.startsWith('wss'),
-                Autorestart: this.Autorestart,
+                Autorestart: this.AutoRestart,
                 RestartEvery: this.RestartEvery,
                 OnDataWs: this.onDataWS,
                 OnId: this.onId,
