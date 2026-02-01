@@ -17,6 +17,7 @@ class Client {
         this.AutoRestart = false;
         this.Done = false;
         this.isReconnecting = false; // Flag to prevent multiple reconnection attempts
+        this.onOpen = null;
 
         // Optimisations pour pub/sub
         this.subscriptions = new Map(); // topic -> ClientSubscription
@@ -52,6 +53,7 @@ class Client {
         client.onDataWS = opts.OnDataWs;
         client.onId = opts.OnId;
         client.onClose = opts.OnClose;
+        client.onOpen = opts.OnOpen;
         await client.connect(opts);
         this.client = client;
         return client;
@@ -321,6 +323,11 @@ class Client {
                         from: this.Id
                     });
 
+                    // Call onOpen callback
+                    if (this.onOpen) {
+                        this.onOpen();
+                    }
+
                     resolve();
                 };
 
@@ -334,6 +341,11 @@ class Client {
                     // Reset flag so next close can trigger reconnect
                     const wasReconnecting = this.isReconnecting;
                     this.isReconnecting = false;
+
+                    // Call onClose callback
+                    if (this.onClose) {
+                        this.onClose();
+                    }
 
                     if (this.AutoRestart && !this.Done) {
                         console.log(`Connection closed, retrying in ${this.RestartEvery / 1000} seconds`);
