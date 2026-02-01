@@ -1122,3 +1122,46 @@ func (ps *Bus) closeAllWebSocketConnections() {
 		delete(ps.wsConns, clientID)
 	}
 }
+
+// TopicSubscriberCount - Résultat du comptage des subscribers sur un topic
+type TopicSubscriberCount struct {
+	Internal int // Nombre de subscribers internes (Go callbacks)
+	WS       int // Nombre de subscribers WebSocket
+	Total    int // Total (Internal + WS)
+}
+
+// CountSubscribers - Compte le nombre de subscribers (internes et WebSocket) sur un topic
+func (ps *Bus) CountSubscribers(topic string) TopicSubscriberCount {
+	topicHandle := unique.Make(topic)
+	result := TopicSubscriberCount{}
+
+	ps.mu.RLock()
+	topicData := ps.topics[topicHandle]
+	wsTopicData := ps.wsSubscribers[topicHandle]
+	ps.mu.RUnlock()
+
+	// Compter les subscribers internes actifs
+	if topicData != nil {
+		topicData.mu.RLock()
+		for _, weakSub := range topicData.subscribers {
+			if sub := weakSub.Value(); sub != nil && sub.active.Load() {
+				result.Internal++
+			}
+		}
+		topicData.mu.RUnlock()
+	}
+
+	// Compter les subscribers WebSocket actifs
+	if wsTopicData != nil && wsTopicData.active.Load() {
+		wsTopicData.mu.RLock()
+		for _, conn := range wsTopicData.connections {
+			if conn.active.Load() {
+				result.WS++
+			}
+		}
+		wsTopicData.mu.RUnlock()
+	}
+
+	result.Total = result.Internal + result.WS
+	return result
+}

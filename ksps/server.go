@@ -875,3 +875,8 @@ func (sb *ServerBus) closeAllConnections() {
 	// Vider la map
 	sb.connections = make(map[string]*ws.Conn)
 }
+
+// CountSubscribers - Compte le nombre de subscribers (internes et WebSocket) sur un topic
+func (sb *ServerBus) CountSubscribers(topic string) TopicSubscriberCount {
+	return sb.Bus.CountSubscribers(topic)
+}
