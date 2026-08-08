@@ -210,6 +210,33 @@ type ConfServer struct {
 	Debug        bool
 }
 
+// NewSmtpServer create an smptp server
+//
+// var conf *ksmtp.ConfServer
+//
+//	if strings.Contains(core.Config.Host, "domain") {
+//		SmtpEmail = "no-reply@domain.com"
+//		SmtpSupportEmail = "support@domain.com"
+//		conf = &ksmtp.ConfServer{
+//			Domain:    "domain.com",
+//			Subdomain: "mail.domain.com",
+//			IPv4:      "123.0.123.10",
+//			IPv6:      "2111:dx8::1",
+//			Address:   ":25",
+//		}
+//	} else {
+//
+//		conf = &ksmtp.ConfServer{
+//			Domain:    "localhost",
+//			Subdomain: "mail.localhost",
+//			IPv4:      "127.0.0.1",
+//			Address:   ":2525",
+//			// *** ACTIVER LE MODE DEV ***
+//			DevMode:      true,        // Active le mode développement
+//			DevRelayHost: "localhost", // Host du serveur SMTP de dev
+//			DevRelayPort: "1025",      // Port du serveur SMTP de dev (MailHog = 1025)
+//		}
+//	}
 func NewSmtpServer(conf *ConfServer) (*SmtpServer, error) {
 	if conf == nil {
 		return nil, fmt.Errorf("no conf provided")
@@ -360,7 +387,36 @@ func (ss *SmtpServer) OnRecv(fn func(*Email)) {
 	ss.onRecv = fn
 }
 
-func (ss *SmtpServer) PrintDNSConfiguration() {
+// PrintDNSConfiguration prints the DNS records configuration using either the server's config or an optional ConfServer override.
+func (ss *SmtpServer) PrintDNSConfiguration(optConf ...*ConfServer) {
+	domain := ""
+	subdomain := ""
+	ipv4 := ""
+	ipv6 := ""
+
+	if ss != nil {
+		domain = ss.Domain
+		subdomain = ss.Subdomain
+		ipv4 = ss.IPv4
+		ipv6 = ss.IPv6
+	}
+
+	if len(optConf) > 0 && optConf[0] != nil {
+		c := optConf[0]
+		if c.Domain != "" {
+			domain = c.Domain
+		}
+		if c.Subdomain != "" {
+			subdomain = c.Subdomain
+		}
+		if c.IPv4 != "" {
+			ipv4 = c.IPv4
+		}
+		if c.IPv6 != "" {
+			ipv6 = c.IPv6
+		}
+	}
+
 	fmt.Println()
 	fmt.Println("🚀 KSMTP - DNS Configuration Helper 🚀")
 	fmt.Println(strings.Repeat("-", 80))
@@ -369,24 +425,24 @@ func (ss *SmtpServer) PrintDNSConfiguration() {
 	fmt.Println(strings.Repeat("-", 80))
 	fmt.Println()
 
-	sub := strings.TrimSuffix(ss.Subdomain, ".")
+	sub := strings.TrimSuffix(subdomain, ".")
 	// A Record
 	fmt.Println("✅ 1.1. A Record (Adresse IPv4)")
 	fmt.Printf("   - Type:      A\n")
 	fmt.Printf("   - Hostname:  %s\n", sub)
-	fmt.Printf("   - IP Address: %s\n", ss.IPv4)
+	fmt.Printf("   - IP Address: %s\n", ipv4)
 	fmt.Println()
 
 	fmt.Println("✅ 1.2. AAAA Record (Adresse IPv6)")
 	fmt.Printf("   - Type:      AAAA\n")
 	fmt.Printf("   - Hostname:  %s\n", sub)
-	fmt.Printf("   - IP Address: %s\n", ss.IPv6)
+	fmt.Printf("   - IP Address: %s\n", ipv6)
 	fmt.Println()
 
 	fmt.Println("✅ 2. SPF Record (Autorisation d'envoi)")
 	fmt.Printf("   - Type:      TXT\n")
-	fmt.Printf("   - Hostname:  %s\n", ss.Domain)
-	fmt.Printf("   - Value:     \"v=spf1 ip4:%s ip6:%s ~all\"\n", ss.IPv4, ss.IPv6)
+	fmt.Printf("   - Hostname:  %s\n", domain)
+	fmt.Printf("   - Value:     \"v=spf1 ip4:%s ip6:%s ~all\"\n", ipv4, ipv6)
 	fmt.Println()
 
 	dkimPrivateKey, err := loadDKIMPrivateKey()
@@ -408,30 +464,40 @@ func (ss *SmtpServer) PrintDNSConfiguration() {
 	fmt.Println("✅ 4. DMARC Record (Politique de sécurité)")
 	fmt.Printf("   - Type:      TXT\n")
 	fmt.Printf("   - Hostname:  _dmarc\n")
-	fmt.Printf("   - Value:     \"v=DMARC1; p=quarantine; rua=mailto:dmarc@%s\"\n", ss.Domain)
+	fmt.Printf("   - Value:     \"v=DMARC1; p=quarantine; rua=mailto:dmarc@%s\"\n", domain)
 	fmt.Println(strings.Repeat("-", 80))
 	fmt.Println()
-	if ss.listener != nil {
-		fmt.Println("✅ 5. MX Record (Pour recevoir les emails)")
-		fmt.Printf("   - Type:      MX\n")
-		fmt.Printf("   - Mail Server: %s\n", ss.Subdomain)
-		fmt.Printf("   - LEAVE SUBDOMAIN EMPTY\n")
-		fmt.Printf("   - Priority:  10\n")
-		fmt.Println()
-	}
+	fmt.Println("✅ 5. MX Record (Pour recevoir les emails)")
+	fmt.Printf("   - Type:      MX\n")
+	fmt.Printf("   - Mail Server: %s\n", subdomain)
+	fmt.Printf("   - LEAVE SUBDOMAIN EMPTY\n")
+	fmt.Printf("   - Priority:  10\n")
+	fmt.Println()
 
 	fmt.Println("🔥 ACTION REQUISE - REVERSE DNS (PTR) 🔥")
 	fmt.Println("1. Allez dans l'onglet 'Networking' de votre Hebergeur.")
-	fmt.Println("2. Trouvez votre adresse IPv6 et cliquez sur 'Edit RDNS'.")
-	fmt.Println("3. Entrez '" + ss.Subdomain + "' comme Reverse DNS et sauvegardez.")
+	fmt.Println("2. Trouvez votre adresse IPv6 et IPv4 Public et cliquez sur 'Edit RDNS reverse dns'.")
+	fmt.Println("3. Entrez '" + subdomain + "' comme Reverse DNS et sauvegardez.")
 	fmt.Println(strings.Repeat("-", 80))
 }
 
-func (ss *SmtpServer) ParseRawEmail(from, data string) *Email {
+// PrintDNSConfiguration standalone helper for printing DNS configuration from a ConfServer pointer.
+func PrintDNSConfiguration(conf *ConfServer) {
+	var ss *SmtpServer
+	ss.PrintDNSConfiguration(conf)
+}
+
+func (ss *SmtpServer) ParseRawEmail(from, data string, recipient ...string) *Email {
 	reader := strings.NewReader(data)
 	msg, err := mail.ReadMessage(reader)
 	if err != nil {
+		toStr := ""
+		if len(recipient) > 0 {
+			toStr = recipient[0]
+		}
 		return &Email{
+			From:      from,
+			To:        toStr,
 			FailedRaw: data,
 		}
 	}
@@ -441,23 +507,35 @@ func (ss *SmtpServer) ParseRawEmail(from, data string) *Email {
 		headers.WriteString(fmt.Sprintf("%s: %s\n", key, strings.Join(values, ", ")))
 	}
 
-	// --- Process body and attachments ---
-	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
-	if err != nil {
-		fmt.Println("❌ Erreur parse email media type:", from)
-		body, _ := io.ReadAll(msg.Body)
-		return &Email{
-			BodyTXT: string(body),
-		}
+	toHeader := msg.Header.Get("To")
+	if toHeader == "" && len(recipient) > 0 {
+		toHeader = recipient[0]
+	}
+	fromHeader := msg.Header.Get("From")
+	if fromHeader == "" {
+		fromHeader = from
 	}
 
 	pe := &Email{
-		From:    msg.Header.Get("From"),
-		To:      msg.Header.Get("To"),
+		From:    fromHeader,
+		To:      toHeader,
 		CC:      msg.Header.Get("Cc"),
 		Subject: msg.Header.Get("Subject"),
 		Date:    msg.Header.Get("Date"),
 		Headers: headers.String(),
+	}
+
+	contentType := msg.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "text/plain; charset=utf-8"
+	}
+
+	// --- Process body and attachments ---
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		body, _ := io.ReadAll(msg.Body)
+		pe.BodyTXT = string(body)
+		return pe
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
@@ -1004,7 +1082,7 @@ func (ss *SmtpServer) processEmail(from, to, data, clientIP string) {
 	if strings.Contains(to, ss.Domain) {
 		// We receive an email - apply spam filtering
 		if ss.onRecv != nil {
-			pe := ss.ParseRawEmail(from, data)
+			pe := ss.ParseRawEmail(from, data, to)
 			if pe != nil {
 				// Appliquer le filtrage anti-spam
 				spamResult := ss.spamFilter.CheckEmail(pe, clientIP)
