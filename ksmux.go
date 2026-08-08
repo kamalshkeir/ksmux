@@ -795,8 +795,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (router *Router) initServer(addr string) {
-	var h http.Handler
+// Handler returns the http.Handler with all registered global middlewares applied.
+func (router *Router) Handler() http.Handler {
+	var h http.Handler = router
 	if len(router.middlewares) > 0 {
 		for i := range router.middlewares {
 			if i == 0 {
@@ -805,9 +806,12 @@ func (router *Router) initServer(addr string) {
 				h = router.middlewares[i](h)
 			}
 		}
-	} else {
-		h = router
 	}
+	return h
+}
+
+func (router *Router) initServer(addr string) {
+	h := router.Handler()
 
 	server := http.Server{
 		Addr:         addr,
@@ -834,18 +838,7 @@ func (f *tlsLogFilter) Write(p []byte) (n int, err error) {
 }
 
 func (router *Router) initAutoServer(tlsconf *tls.Config) {
-	var h http.Handler
-	if len(router.middlewares) > 0 {
-		for i := range router.middlewares {
-			if i == 0 {
-				h = router.middlewares[0](router)
-			} else {
-				h = router.middlewares[i](h)
-			}
-		}
-	} else {
-		h = router
-	}
+	h := router.Handler()
 
 	// Créer un logger qui filtre les erreurs TLS
 	tlsErrorLogger := log.New(&tlsLogFilter{}, "", log.LstdFlags)

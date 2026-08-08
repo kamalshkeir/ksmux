@@ -274,7 +274,7 @@ func (lb *LoadBalancer) NextBackend(path string) *Backend {
 
 	// Try the selected backend first
 	backend := lb.backends[idx]
-	if backend.Alive && backend.circuitBreaker.IsAvailable() {
+	if backend.IsAlive() && backend.circuitBreaker.IsAvailable() {
 		return backend
 	}
 
@@ -282,13 +282,20 @@ func (lb *LoadBalancer) NextBackend(path string) *Backend {
 	for i := 1; i < count; i++ {
 		tryIdx := (idx + i) % count
 		backend := lb.backends[tryIdx]
-		if backend.Alive && backend.circuitBreaker.IsAvailable() {
+		if backend.IsAlive() && backend.circuitBreaker.IsAvailable() {
 			return backend
 		}
 	}
 
 	return nil
 }
+
+func (b *Backend) IsAlive() bool {
+	b.mux.RLock()
+	defer b.mux.RUnlock()
+	return b.Alive
+}
+
 
 func NewCircuitBreaker() *CircuitBreaker {
 	return &CircuitBreaker{

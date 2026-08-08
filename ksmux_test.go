@@ -3,6 +3,7 @@ package ksmux
 import (
 	"io"
 	"maps"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -163,5 +164,100 @@ func TestKsmux(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// 1. Test déterminant pour la séparation des méthodes HTTP (POST, PUT, DELETE)
+func TestHTTPMethods(t *testing.T) {
+	router := New()
+
+	router.Post("/items/:id", func(c *Context) {
+		c.Text("POST:" + c.Param("id"))
+	})
+	router.Put("/items/:id", func(c *Context) {
+		c.Text("PUT:" + c.Param("id"))
+	})
+	router.Delete("/items/:id", func(c *Context) {
+		c.Text("DELETE:" + c.Param("id"))
+	})
+
+	cases := []struct {
+		method   string
+		wantBody string
+	}{
+		{"POST", "POST:42"},
+		{"PUT", "PUT:42"},
+		{"DELETE", "DELETE:42"},
+	}
+
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, "/items/42", nil)
+		router.ServeHTTP(w, req)
+
+		body, _ := io.ReadAll(w.Result().Body)
+		if string(body) != tc.wantBody {
+			t.Errorf("Method %s: got %q, want %q", tc.method, string(body), tc.wantBody)
+		}
+	}
+}
+
+// 2. Test déterminant pour la Concurrence et Thread-Safety (pools context & params)
+func TestParallelConcurrency(t *testing.T) {
+	router := New()
+	router.Get("/data/:category/:id", func(c *Context) {
+		c.Text(c.Param("category") + "-" + c.Param("id"))
+	})
+
+	t.Run("concurrent_requests", func(t *testing.T) {
+		t.Parallel()
+		for i := 0; i < 50; i++ {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", "/data/tech/100", nil)
+			router.ServeHTTP(w, req)
+
+			body, _ := io.ReadAll(w.Result().Body)
+			if string(body) != "tech-100" {
+				t.Errorf("Concurrent request failed: got %q, want %q", string(body), "tech-100")
+			}
+		}
+	})
+}
+
+// 3. Test déterminant pour les Middlewares et le ReverseProxy par nom d'hôte
+func TestMiddlewareAndReverseProxy(t *testing.T) {
+	router := New()
+
+	// Global Middleware
+	router.Use(func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Global-Middleware", "active")
+			h.ServeHTTP(w, r)
+		})
+	})
+
+	// Serveur Backend Simulé pour le ReverseProxy
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("backend-ok"))
+	}))
+	defer backend.Close()
+
+	// Reverse Proxy Host-based
+	router.ReverseProxy("app.domain.com", backend.URL)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "app.domain.com"
+	router.Handler().ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	if string(body) != "backend-ok" {
+		t.Errorf("ReverseProxy response: got %q, want 'backend-ok'", string(body))
+	}
+	if w.Header().Get("X-Global-Middleware") != "active" {
+		t.Errorf("Middleware header missing: got %q", w.Header().Get("X-Global-Middleware"))
 	}
 }

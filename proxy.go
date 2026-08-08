@@ -89,7 +89,7 @@ func proxyHandler(req *http.Request, resp http.ResponseWriter, proxy *httputil.R
 	proxy.ServeHTTP(resp, req)
 }
 
-func proxyMid() func(http.Handler) http.Handler {
+func proxyMid(router *Router) func(http.Handler) http.Handler {
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			host := r.Host
@@ -98,29 +98,40 @@ func proxyMid() func(http.Handler) http.Handler {
 			}
 			host = strings.TrimSuffix(host, ":")
 
-			if v, ok := GetFirstRouter().proxies.Get(host); ok {
-				if router, ok := v.(*Router); ok {
-					var h http.Handler = router
-					if len(router.middlewares) > 0 {
-						for i := range router.middlewares {
-							if i == 0 {
-								h = router.middlewares[0](router)
-							} else {
-								h = router.middlewares[i](h)
+			targetRouter := router
+			if targetRouter == nil {
+				targetRouter = GetFirstRouter()
+			}
+
+			if targetRouter != nil {
+				if v, ok := targetRouter.proxies.Get(host); ok {
+					if rtr, ok := v.(*Router); ok {
+						var h http.Handler = rtr
+						if len(rtr.middlewares) > 0 {
+							for i := range rtr.middlewares {
+								if i == 0 {
+									h = rtr.middlewares[0](rtr)
+								} else {
+									h = rtr.middlewares[i](h)
+								}
 							}
 						}
+						h.ServeHTTP(w, r)
+						return
 					}
-					h.ServeHTTP(w, r)
+					v.ServeHTTP(w, r)
 					return
 				}
-				v.ServeHTTP(w, r)
-				return
 			}
 			h.ServeHTTP(w, r)
 		})
 	}
 }
 
+// ReverseProxy reverse proxy to host and url
+// like ReverseProxy("subdomain.domain.com", "http://127.0.0.1:18379")
+// like ReverseProxy("subdomain.domain.com", "http://127.0.0.1:18379")
+// like ReverseProxy("anotherdomain.com", "http://127.0.0.1:8080")
 func (router *Router) ReverseProxy(host, toURL string) (newRouter *Router) {
 	urll, err := url.Parse(toURL)
 	if lg.CheckError(err) {
@@ -141,9 +152,9 @@ func (router *Router) ReverseProxy(host, toURL string) (newRouter *Router) {
 	}
 	proxy := httputil.NewSingleHostReverseProxy(urll)
 	if len(router.middlewares) > 0 {
-		router.middlewares = append([]func(http.Handler) http.Handler{proxyMid()}, router.middlewares...)
+		router.middlewares = append([]func(http.Handler) http.Handler{proxyMid(router)}, router.middlewares...)
 	} else {
-		router.middlewares = append(router.middlewares, proxyMid())
+		router.middlewares = append(router.middlewares, proxyMid(router))
 	}
 	newRouter = New()
 	_ = router.proxies.Set(host, newRouter)

@@ -59,7 +59,7 @@ func TestLoadBalancer(t *testing.T) {
 				healthyCount := 0
 				lb.mux.RLock()
 				for _, b := range lb.backends {
-					if b.Alive {
+					if b.IsAlive() {
 						healthyCount++
 					}
 				}
