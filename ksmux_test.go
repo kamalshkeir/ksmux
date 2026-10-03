@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/kamalshkeir/ksmux/jsonencdec"
@@ -259,5 +260,293 @@ func TestMiddlewareAndReverseProxy(t *testing.T) {
 	}
 	if w.Header().Get("X-Global-Middleware") != "active" {
 		t.Errorf("Middleware header missing: got %q", w.Header().Get("X-Global-Middleware"))
+	}
+}
+
+// 4. Test déterminant pour l'isolation des Context entre requêtes après un panic
+//
+// Un handler qui panique doit rendre au pool un Context nettoyé. Si le reset est
+// une instruction ordinaire placée après handler(c), il est sauté quand la pile
+// se déroule, alors que le defer contextPool.Put(c) s'exécute malgré tout : le
+// Context pollué retourne dans le pool. La requête suivante passe alors par une
+// route sans paramètre, dont la branche n'affecte pas c.Params, et lit les
+// paramètres de la requête qui a paniqué.
+func TestContextIsolationAfterPanic(t *testing.T) {
+	router := New()
+
+	// Le PanicHandler masque complètement la défaillance côté HTTP : la requête
+	// qui a paniqué répond un 500 parfaitement banal.
+	router.RouterConfig.PanicHandler = func(w http.ResponseWriter, req *http.Request, rcv interface{}) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+
+	// Route avec paramètre, qui panique.
+	router.Get("/user/:id", func(c *Context) {
+		panic("boom: " + c.Param("id"))
+	})
+
+	// Route sans paramètre : elle ne doit rien voir, jamais.
+	router.Get("/health", func(c *Context) {
+		c.Text(c.Param("id"))
+	})
+
+	// La fuite ne concerne qu'une seule requête, celle qui réutilise aussitôt
+	// l'objet pollué. On répète donc le cycle pour rendre la détection fiable,
+	// sans jamais produire d'échec sur un code correct.
+	const cycles = 50
+	for i := range cycles {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest("GET", "/user/SECRET-42", nil))
+
+		if got := w.Result().StatusCode; got != http.StatusInternalServerError {
+			t.Fatalf("cycle %d: le PanicHandler n'a pas répondu 500, got %d", i, got)
+		}
+
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest("GET", "/health", nil))
+		body, _ := io.ReadAll(w.Result().Body)
+
+		if string(body) != "" {
+			t.Fatalf("cycle %d: /health a vu les paramètres d'une autre requête: %q", i, string(body))
+		}
+	}
+}
+
+// 5. Test déterminant pour le contrôle d'origine CORS
+//
+// Le contrôle compare l'en-tête Origin à la liste d'origines autorisées par
+// sous-chaîne (strings.Contains). Toute origine qui est un fragment d'une
+// origine autorisée passe donc le contrôle : autoriser "http://example.com"
+// laisse passer "http://example.co", "example.com", etc.
+func TestCORSRejectsPartialOrigin(t *testing.T) {
+	router := New()
+	router.EnableDomainCheck()
+	router.Get("/api", func(c *Context) { c.Text("secret") }, "http://example.com")
+
+	cases := []struct {
+		name     string
+		origin   string
+		wantCode int
+	}{
+		{"origine autorisée", "http://example.com", http.StatusOK},
+		{"préfixe d'une origine autorisée", "http://example.co", http.StatusForbidden},
+		{"fragment d'une origine autorisée", "example.com", http.StatusForbidden},
+		{"origine non autorisée", "http://evil.com", http.StatusForbidden},
+		{"domaine voisin non autorisé", "http://example.com.evil.com", http.StatusForbidden},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api", nil)
+			req.Header.Set("Origin", tc.origin)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if got := w.Result().StatusCode; got != tc.wantCode {
+				t.Errorf("Origin %q: got %d, want %d", tc.origin, got, tc.wantCode)
+			}
+		})
+	}
+
+	// Une requête sans en-tête Origin n'est pas une requête CORS : elle doit
+	// rester acceptée, sinon les appels serveur-à-serveur cassent.
+	t.Run("sans en-tête Origin", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest("GET", "/api", nil))
+
+		if got := w.Result().StatusCode; got != http.StatusOK {
+			t.Errorf("sans en-tête Origin: got %d, want %d", got, http.StatusOK)
+		}
+	})
+}
+
+// 6. Test déterminant pour la coexistence entre route statique et catchAll
+//
+// insertChild remplaçait children par un slice d'un seul élément lors de
+// l'enregistrement d'un catchAll, ce qui supprimait les routes statiques déjà
+// enregistrées au même niveau. L'ordre d'enregistrement décidait donc de
+// l'existence des routes.
+func TestCatchAllKeepsStaticSibling(t *testing.T) {
+	cases := []struct {
+		name     string
+		register func(router *Router)
+	}{
+		{
+			name: "statique enregistrée avant le wildcard",
+			register: func(router *Router) {
+				router.Get("/files/special", func(c *Context) { c.Text("statique") })
+				router.Get("/files/*path", func(c *Context) { c.Text("wildcard") })
+			},
+		},
+		{
+			name: "statique enregistrée après le wildcard",
+			register: func(router *Router) {
+				router.Get("/files/*path", func(c *Context) { c.Text("wildcard") })
+				router.Get("/files/special", func(c *Context) { c.Text("statique") })
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router := New()
+			tc.register(router)
+
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, httptest.NewRequest("GET", "/files/special", nil))
+			body, _ := io.ReadAll(w.Result().Body)
+
+			if string(body) != "statique" {
+				t.Errorf("GET /files/special: got %q, want %q", string(body), "statique")
+			}
+		})
+	}
+
+	// Le wildcard doit rester joignable pour ce qu'il couvre vraiment.
+	t.Run("le wildcard sert toujours son segment", func(t *testing.T) {
+		router := New()
+		router.Get("/files/special", func(c *Context) { c.Text("statique") })
+		router.Get("/files/*path", func(c *Context) { c.Text("wildcard") })
+
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httptest.NewRequest("GET", "/files/a/b/c", nil))
+		body, _ := io.ReadAll(w.Result().Body)
+
+		if string(body) != "wildcard" {
+			t.Errorf("GET /files/a/b/c: got %q, want %q", string(body), "wildcard")
+		}
+	})
+}
+
+// 7. Test déterminant pour le segment vide : catchAll et :param se
+// comportent différemment, et c'est voulu.
+//
+// Un catchAll consomme « le reste du chemin », donc une capture vide est
+// valide : /files/ matche /files/*path avec une valeur vide. En revanche
+// /files ne matche pas du tout, faute de slash à consommer.
+//
+// Un :param, lui, ne reçoit jamais de valeur vide : c'est ce qui permet à
+// /users/ de ne pas matcher /users/:id et de basculer sur la redirection.
+func TestEmptySegmentCatchAllAndParam(t *testing.T) {
+	catchAll := New()
+	catchAll.Get("/files/*path", func(c *Context) { c.Text("[" + c.Param("path") + "]") })
+
+	catchAllCases := []struct {
+		path     string
+		wantCode int
+		wantText string
+	}{
+		{"/files", http.StatusNotFound, "404 page not found\n"},
+		{"/files/", http.StatusOK, "[]"},
+		{"/files/a", http.StatusOK, "[a]"},
+		{"/files/a/b", http.StatusOK, "[a/b]"},
+	}
+	for _, tc := range catchAllCases {
+		t.Run("catchAll "+tc.path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			catchAll.ServeHTTP(w, httptest.NewRequest("GET", tc.path, nil))
+			body, _ := io.ReadAll(w.Result().Body)
+
+			if got := w.Result().StatusCode; got != tc.wantCode {
+				t.Errorf("status = %d, want %d", got, tc.wantCode)
+			}
+			if string(body) != tc.wantText {
+				t.Errorf("body = %q, want %q", string(body), tc.wantText)
+			}
+		})
+	}
+
+	param := New()
+	param.Get("/users", func(c *Context) { c.Text("LISTE") })
+	param.Get("/users/:id", func(c *Context) { c.Text("DETAIL id=" + c.Param("id")) })
+
+	reports := func(c *Context) { c.Text("REPORTS " + c.Param("id")) }
+	// Enregistré sur les trois méthodes : la redirection après slash final est
+	// 301 pour GET et 308 pour les autres, qui doivent rejouer le corps.
+	param.Get("/users/:id/reports", reports)
+	param.Post("/users/:id/reports", reports)
+	param.Put("/users/:id/reports", reports)
+
+	// Le handler :id ne doit jamais recevoir une valeur vide.
+	w := httptest.NewRecorder()
+	param.ServeHTTP(w, httptest.NewRequest("GET", "/users/", nil))
+	if got := w.Result().StatusCode; got != http.StatusMovedPermanently {
+		t.Errorf("GET /users/ : status = %d, want %d (le handler :id ne doit pas voir une valeur vide)",
+			got, http.StatusMovedPermanently)
+	}
+
+	for _, tc := range []struct {
+		method   string
+		wantCode int
+	}{
+		{"GET", http.StatusMovedPermanently},
+		{"POST", http.StatusPermanentRedirect},
+		{"PUT", http.StatusPermanentRedirect},
+	} {
+		w = httptest.NewRecorder()
+		param.ServeHTTP(w, httptest.NewRequest(tc.method, "/users/1/reports/", nil))
+		if got := w.Result().StatusCode; got != tc.wantCode {
+			t.Errorf("%s /users/1/reports/ : status = %d, want %d", tc.method, got, tc.wantCode)
+		}
+	}
+
+	w = httptest.NewRecorder()
+	param.ServeHTTP(w, httptest.NewRequest("GET", "/users/1", nil))
+	body, _ := io.ReadAll(w.Result().Body)
+	if string(body) != "DETAIL id=1" {
+		t.Errorf("GET /users/1 : body = %q, want %q", string(body), "DETAIL id=1")
+	}
+}
+
+// 8. Test déterminant pour la recommandation de redirection de Lookup()
+//
+// Lookup documente un troisième retour tsr indiquant s'il faut rediriger vers
+// la même route avec ou sans slash final, précisément pour qui veut construire
+// un framework par-dessus. Les quatre sorties de getHandler renvoient false.
+func TestLookupReportsTrailingSlash(t *testing.T) {
+	router := New()
+	router.Get("/users", func(c *Context) { c.Text("users") })
+
+	_, _, tsrWithSlash, _ := router.Lookup("GET", "/users/")
+	if !tsrWithSlash {
+		t.Error(`Lookup("GET", "/users/"): tsr = false, la route /users existe pourtant`)
+	}
+
+	_, _, tsrWithoutSlash, _ := router.Lookup("GET", "/users")
+	if tsrWithoutSlash {
+		t.Error(`Lookup("GET", "/users"): tsr = true alors que la route correspond`)
+	}
+}
+
+// 9. Point de décision : ordre d'exécution des middlewares
+//
+// Handler() compose la chaîne de façon inversée par rapport à la convention
+// (Express, Chi, chaînage standard) : le dernier middleware enregistré est le
+// plus externe. Ce test énonce la convention usuelle, donc il échoue. Corriger
+// l'implémentation le fera passer ; le garder tel quel impose d'inverser ce
+// test et d'assumer la divergence.
+func TestMiddlewareOrderFollowsRegistration(t *testing.T) {
+	router := New()
+
+	var order []string
+	mw := func(name string) func(http.Handler) http.Handler {
+		return func(h http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				order = append(order, name)
+				h.ServeHTTP(w, r)
+			})
+		}
+	}
+
+	router.Use(mw("A"))
+	router.Use(mw("B"))
+	router.Get("/", func(c *Context) { c.Text("ok") })
+
+	order = nil
+	router.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+
+	want := []string{"A", "B"}
+	if !slices.Equal(order, want) {
+		t.Errorf("ordre d'exécution = %v, want %v (le premier enregistré doit envelopper le suivant)", order, want)
 	}
 }

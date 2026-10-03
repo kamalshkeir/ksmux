@@ -322,7 +322,10 @@ func (r *Router) Lookup(method, path string) (Handler, Params, bool, string) {
 		handler, ps, tsr, origines := root.getHandler(path, r.getParams)
 		if handler == nil {
 			r.putParams(ps)
-			return nil, nil, tsr, origines
+			// getHandler never sets tsr, so the trailing-slash recommendation is
+			// computed here. It is a pure route-existence hint, and deciding
+			// whether to actually redirect stays with the caller.
+			return nil, nil, toggledSlashMatches(root, path), origines
 		}
 		if ps == nil {
 			return handler, nil, tsr, origines
@@ -565,4 +568,15 @@ func SliceContains[T comparable](elems []T, vs ...T) bool {
 		}
 	}
 	return false
+}
+
+// toggledSlashMatches reports whether the same path with its trailing slash
+// added or removed matches a registered route.
+func toggledSlashMatches(root *node, path string) bool {
+	alt := path + "/"
+	if strings.HasSuffix(path, "/") && len(path) > 1 {
+		alt = path[:len(path)-1]
+	}
+	h, _, _, _ := root.getHandler(alt, nil)
+	return h != nil
 }

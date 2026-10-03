@@ -708,6 +708,27 @@ func (router *Router) EnableDomainCheck() {
 	}
 }
 
+// originAllowed reports whether origin is one of the allowed origins, which
+// are comma separated.
+//
+// It is a list membership test on purpose. A substring test would let any
+// origin that happens to be a fragment of an allowed one through: with
+// "http://example.com" allowed, "http://example.co" or "example.com" would
+// both be accepted.
+func originAllowed(allowed, origin string) bool {
+	if origin == "" {
+		// No Origin header: this is not a CORS request, nothing to enforce.
+		// Rejecting it would break server-to-server and same-origin calls.
+		return true
+	}
+	for _, o := range strings.Split(allowed, ",") {
+		if strings.EqualFold(strings.TrimSpace(o), origin) {
+			return true
+		}
+	}
+	return false
+}
+
 // ServeHTTP makes the router implement the http.Handler interface.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if r.RouterConfig.PanicHandler != nil {
@@ -727,7 +748,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if root := r.trees[req.Method]; root != nil {
 		if handler, ps, _, origines := root.getHandler(path, r.getParams); handler != nil {
-			if r.state.corsEnabled && origines != "" && !strings.Contains(origines, "*") && !strings.Contains(origines, req.Header.Get("Origin")) {
+			if r.state.corsEnabled && origines != "" && !strings.Contains(origines, "*") && !originAllowed(origines, req.Header.Get("Origin")) {
 				http.Error(w,
 					http.StatusText(http.StatusForbidden),
 					http.StatusForbidden,
@@ -737,16 +758,21 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			c := contextPool.Get().(*Context)
 			c.ResponseWriter = w
 			c.Request = req
-			defer contextPool.Put(c)
+			// The Context owns its Params for the whole request: assign in both
+			// branches so a recycled Context can never expose another request's
+			// params, then release everything in a single defer so the cleanup
+			// also runs when a handler panics.
 			if ps != nil {
 				c.Params = *ps
-				handler(c)
+			} else {
+				c.Params = c.Params[:0]
+			}
+			defer func() {
 				r.putParams(ps)
 				c.reset()
-			} else {
-				handler(c)
-				c.reset()
-			}
+				contextPool.Put(c)
+			}()
+			handler(c)
 			return
 		} else if r.RouterConfig.RedirectTrailingSlash && hasTrailingSlash {
 			// Try without trailing slash
@@ -796,16 +822,16 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // Handler returns the http.Handler with all registered global middlewares applied.
+//
+// The first middleware passed to Use is the outermost one, so it runs first and
+// wraps the ones registered after it. Middlewares that short-circuit (auth, CORS,
+// rate limiting) therefore belong at the top of the chain, which is the order
+// Express, Chi and the standard wrapping idiom all follow.
 func (router *Router) Handler() http.Handler {
 	var h http.Handler = router
-	if len(router.middlewares) > 0 {
-		for i := range router.middlewares {
-			if i == 0 {
-				h = router.middlewares[0](router)
-			} else {
-				h = router.middlewares[i](h)
-			}
-		}
+	// Wrap in reverse order so the first registered middleware ends up outermost.
+	for i := len(router.middlewares) - 1; i >= 0; i-- {
+		h = router.middlewares[i](h)
 	}
 	return h
 }

@@ -73,6 +73,7 @@ func (c *Context) reset() {
 	c.status = 200
 	c.Request = nil
 	c.ResponseWriter = nil
+	c.pushOptions = nil
 }
 
 // Context return request context

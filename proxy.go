@@ -151,11 +151,11 @@ func (router *Router) ReverseProxy(host, toURL string) (newRouter *Router) {
 		lg.WarnC("Port is ignored in host")
 	}
 	proxy := httputil.NewSingleHostReverseProxy(urll)
-	if len(router.middlewares) > 0 {
-		router.middlewares = append([]func(http.Handler) http.Handler{proxyMid(router)}, router.middlewares...)
-	} else {
-		router.middlewares = append(router.middlewares, proxyMid(router))
-	}
+	// Appended last on purpose: Handler() wraps in reverse order, so the last
+	// registered middleware is the innermost one. proxyMid short-circuits on a
+	// matching Host, so it has to sit closest to the router for the global
+	// middlewares to still run on proxied hosts.
+	router.middlewares = append(router.middlewares, proxyMid(router))
 	newRouter = New()
 	_ = router.proxies.Set(host, newRouter)
 

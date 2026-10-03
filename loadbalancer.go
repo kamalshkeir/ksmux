@@ -296,7 +296,6 @@ func (b *Backend) IsAlive() bool {
 	return b.Alive
 }
 
-
 func NewCircuitBreaker() *CircuitBreaker {
 	return &CircuitBreaker{
 		state:            StateClosed,

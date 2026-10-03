@@ -31,7 +31,6 @@ type node struct {
 	children  []*node
 	nType     typeOfNode
 	paramInfo *paramInfo
-	indexes   string
 	isWild    bool
 	origines  string
 }
@@ -39,75 +38,12 @@ type node struct {
 // addPath adds a node with the given handler to the path.
 // Not concurrency-safe!
 func (n *node) addPath(path string, handler Handler, origines ...string) {
-	// lg.Debug("addPath called", "path", path)
-
-	if n.path == "" && n.indexes == "" {
-		// lg.Debug("empty tree, inserting root")
-		n.insertChild(path, handler, origines...)
-		n.nType = root
-		return
-	}
-
-walk:
-	for {
-		i := longestCommonPrefix(path, n.path)
-		// lg.Debug("found common prefix", "len", i, "path", path, "nodePath", n.path)
-
-		if i < len(n.path) {
-			// lg.Debug("splitting edge", "path", path, "nodePath", n.path)
-			child := node{
-				path:     n.path[i:],
-				nType:    static,
-				indexes:  n.indexes,
-				children: n.children,
-				handler:  n.handler,
-				origines: n.origines,
-			}
-			n.children = []*node{&child}
-			n.indexes = string([]byte{n.path[i]})
-			n.path = path[:i]
-			n.handler = nil
-		}
-
-		if i < len(path) {
-			path = path[i:]
-			// lg.Debug("remaining path", "path", path)
-
-			// Check for parameter
-			if path[0] == ':' {
-				// lg.Debug("found parameter in path", "path", path)
-				for i, index := range []byte(n.indexes) {
-					if index == ':' {
-						// lg.Debug("found existing param node", "index", i)
-						n = n.children[i]
-						continue walk
-					}
-				}
-			}
-
-			// Find matching child
-			for i, index := range []byte(n.indexes) {
-				if path[0] == index {
-					// lg.Debug("found matching child", "index", i, "char", string(index))
-					n = n.children[i]
-					continue walk
-				}
-			}
-
-			// No matching child
-			// lg.Debug("no matching child, creating new one", "path", path)
-			n.indexes += string([]byte{path[0]})
-			child := &node{}
-			n.children = append(n.children, child)
-			n = child
-			n.insertChild(path, handler, origines...)
-			return
-		}
-
-		n.handler = handler
-		n.origines = strings.Join(origines, ",")
-		return
-	}
+	// The root node never carries a path of its own: the tree is built segment
+	// by segment by insertChild, so this is the only reachable branch. The
+	// byte-level radix walk that used to follow it, inherited from httprouter,
+	// could never run and was removed along with longestCommonPrefix.
+	n.insertChild(path, handler, origines...)
+	n.nType = root
 }
 
 func (n *node) insertChild(path string, handler Handler, origines ...string) {
@@ -181,7 +117,7 @@ func (n *node) insertChild(path string, handler Handler, origines ...string) {
 				origines: strings.Join(origines, ","),
 				isWild:   true,
 			}
-			current.children = []*node{child}
+			current.children = append(current.children, child)
 			return
 		}
 
@@ -255,8 +191,13 @@ func (n *node) getHandler(path string, params func() *Params) (handler Handler, 
 				}
 			}
 
-			// Try parameter nodes
-			if next == nil {
+			// Try parameter nodes.
+			//
+			// An empty segment is skipped on purpose: it is what a trailing
+			// slash produces, and matching it would make /users/ a hit for
+			// /users/:id with an empty id, which would in turn keep the
+			// trailing-slash redirect from ever running.
+			if next == nil && segment != "" {
 				paramPos++
 				for _, child := range current.children {
 					if child.nType == param && child.paramInfo.position == paramPos {
@@ -279,7 +220,10 @@ func (n *node) getHandler(path string, params func() *Params) (handler Handler, 
 				}
 			}
 
-			// Try catchAll - allow empty segments for wildcards
+			// Try catchAll. A wildcard consumes the rest of the path, so an empty
+			// capture is valid here: /files/ matches /files/*path with an empty
+			// value, while /files does not match at all, since there is no slash
+			// left to consume. Unlike a :param, which never receives an empty value.
 			if next == nil {
 				for _, child := range current.children {
 					if child.nType == catchAll {
@@ -309,19 +253,6 @@ func (n *node) getHandler(path string, params func() *Params) (handler Handler, 
 	}
 
 	return current.handler, ps, false, current.origines
-}
-
-func longestCommonPrefix(a, b string) int {
-	i := 0
-	max := len(a)
-	if len(b) < max {
-		max = len(b)
-	}
-	// Use unsafe.Pointer for faster access
-	for i < max && a[i] == b[i] {
-		i++
-	}
-	return i
 }
 
 func countParams(path string) uint16 {
