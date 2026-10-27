@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -104,35 +105,142 @@ func Logs(callback ...func(method, path, remote string, status int, took time.Du
 	}
 }
 
+// CorsConfig holds configuration options for the CORS middleware.
+type CorsConfig struct {
+	AllowedOrigins   []string
+	AllowedMethods   []string
+	AllowedHeaders   []string
+	ExposedHeaders   []string
+	AllowCredentials bool
+	MaxAge           int
+}
+
+// Cors returns a CORS middleware with the specified allowed origins.
+// If no origins are provided or "*" is included, all origins are permitted.
 var Cors = func(allowed ...string) func(http.Handler) http.Handler {
-	firstRouter.state.corsEnabled = true
-	if len(allowed) == 0 {
-		allowed = append(allowed, "*")
+	return CorsWithConfig(CorsConfig{
+		AllowedOrigins:   allowed,
+		AllowCredentials: true,
+	})
+}
+
+// CorsWithConfig returns a CORS middleware with customizable options.
+func CorsWithConfig(cfg CorsConfig) func(http.Handler) http.Handler {
+	if firstRouter != nil {
+		firstRouter.state.corsEnabled = true
 	}
-	for i := range allowed {
-		if allowed[i] == "*" {
-			continue
+
+	allowAll := len(cfg.AllowedOrigins) == 0
+	var cleanOrigins []string
+	for _, o := range cfg.AllowedOrigins {
+		o = strings.TrimSpace(o)
+		if o == "*" {
+			allowAll = true
+			break
 		}
-		allowed[i] = strings.ReplaceAll(allowed[i], "localhost", "127.0.0.1")
-		if !strings.HasPrefix(allowed[i], "http") {
-			allowed[i] = "http://" + allowed[i]
+		if o != "" {
+			o = strings.TrimSuffix(o, "/")
+			cleanOrigins = append(cleanOrigins, o)
 		}
 	}
+
+	allowedMethods := "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS"
+	if len(cfg.AllowedMethods) > 0 {
+		allowedMethods = strings.Join(cfg.AllowedMethods, ", ")
+	}
+
+	exposedHeaders := ""
+	if len(cfg.ExposedHeaders) > 0 {
+		exposedHeaders = strings.Join(cfg.ExposedHeaders, ", ")
+	}
+
+	maxAgeStr := ""
+	if cfg.MaxAge > 0 {
+		maxAgeStr = strconv.Itoa(cfg.MaxAge)
+	} else {
+		maxAgeStr = "86400"
+	}
+
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if allowed[0] == "*" {
-				w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
-			} else {
-				w.Header().Set("Access-Control-Allow-Origin", allowed[0])
+			if firstRouter != nil && !firstRouter.state.corsEnabled {
+				firstRouter.state.corsEnabled = true
 			}
-			w.Header().Set("Access-Control-Allow-Methods", "*")
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Headers", "*")
-			if r.Method == "OPTIONS" {
-				w.Header().Set("Access-Control-Allow-Headers", "Access-Control-Allow-Headers, Origin, Accept, X-Requested-With, Content-Type, Access-Control-Request-Method, Access-Control-Request-Headers, X-Korm, Authorization, Token, X-Token")
+
+			origin := r.Header.Get("Origin")
+			originAllowed := false
+
+			if allowAll {
+				originAllowed = true
+				if origin != "" {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+				} else {
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+				}
+			} else if origin != "" {
+				trimmedOrigin := strings.TrimSuffix(origin, "/")
+				for _, o := range cleanOrigins {
+					if strings.EqualFold(trimmedOrigin, o) ||
+						strings.EqualFold(trimmedOrigin, "http://"+o) ||
+						strings.EqualFold(trimmedOrigin, "https://"+o) {
+						originAllowed = true
+						w.Header().Set("Access-Control-Allow-Origin", origin)
+						break
+					}
+				}
+			}
+
+			if originAllowed {
+				w.Header().Add("Vary", "Origin")
+				if cfg.AllowCredentials {
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
+				if exposedHeaders != "" {
+					w.Header().Set("Access-Control-Expose-Headers", exposedHeaders)
+				}
+			}
+
+			w.Header().Set("Access-Control-Allow-Methods", allowedMethods)
+
+			// Handle Preflight OPTIONS
+			if r.Method == http.MethodOptions {
+				w.Header().Add("Vary", "Access-Control-Request-Method")
+				w.Header().Add("Vary", "Access-Control-Request-Headers")
+
+				reqHeaders := r.Header.Get("Access-Control-Request-Headers")
+				if len(cfg.AllowedHeaders) > 0 {
+					w.Header().Set("Access-Control-Allow-Headers", strings.Join(cfg.AllowedHeaders, ", "))
+				} else if reqHeaders != "" {
+					w.Header().Set("Access-Control-Allow-Headers", reqHeaders)
+				} else {
+					w.Header().Set("Access-Control-Allow-Headers", "Origin, Accept, Content-Type, Authorization, X-Requested-With, Token, X-Token")
+				}
+
+				if maxAgeStr != "" {
+					w.Header().Set("Access-Control-Max-Age", maxAgeStr)
+				}
+
+				if !originAllowed && !allowAll && origin != "" {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
+
+			// Non-preflight requests
+			if len(cfg.AllowedHeaders) > 0 {
+				w.Header().Set("Access-Control-Allow-Headers", strings.Join(cfg.AllowedHeaders, ", "))
+			} else {
+				reqHeaders := r.Header.Get("Access-Control-Request-Headers")
+				if reqHeaders != "" {
+					w.Header().Set("Access-Control-Allow-Headers", reqHeaders)
+				} else {
+					w.Header().Set("Access-Control-Allow-Headers", "*")
+				}
+			}
+
 			// Next
 			h.ServeHTTP(w, r)
 		})

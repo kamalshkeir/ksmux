@@ -131,13 +131,13 @@ func (c *Context) Text(body string) {
 
 // SetCookie set cookie given key and value
 func (c *Context) SetCookie(key, value string, maxAge ...time.Duration) {
-	if !COOKIES_SECURE {
-		if c.Request.TLS != nil {
-			COOKIES_SECURE = true
-		}
+	secure := COOKIES_SECURE
+	if !secure && c.Request != nil && c.Request.TLS != nil {
+		secure = true
 	}
-	if firstRouter.state.corsEnabled {
-		COOKIES_SameSite = http.SameSiteNoneMode
+	sameSite := COOKIES_SameSite
+	if firstRouter != nil && firstRouter.state.corsEnabled && secure {
+		sameSite = http.SameSiteNoneMode
 	}
 	var ma int
 	if len(maxAge) > 0 {
@@ -148,8 +148,8 @@ func (c *Context) SetCookie(key, value string, maxAge ...time.Duration) {
 			Path:     "/",
 			Expires:  time.Now().Add(maxAge[0]),
 			HttpOnly: COOKIES_HttpOnly,
-			SameSite: COOKIES_SameSite,
-			Secure:   COOKIES_SECURE,
+			SameSite: sameSite,
+			Secure:   secure,
 			MaxAge:   ma,
 		})
 	} else {
@@ -160,8 +160,8 @@ func (c *Context) SetCookie(key, value string, maxAge ...time.Duration) {
 			Path:     "/",
 			Expires:  time.Now().Add(COOKIES_Expires),
 			HttpOnly: COOKIES_HttpOnly,
-			SameSite: COOKIES_SameSite,
-			Secure:   COOKIES_SECURE,
+			SameSite: sameSite,
+			Secure:   secure,
 			MaxAge:   ma,
 		})
 	}

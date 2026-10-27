@@ -550,3 +550,101 @@ func TestMiddlewareOrderFollowsRegistration(t *testing.T) {
 		t.Errorf("ordre d'exécution = %v, want %v (le premier enregistré doit envelopper le suivant)", order, want)
 	}
 }
+
+func TestCORSMiddleware(t *testing.T) {
+	// 1. Test nil-safe initialization before router
+	corsMid := Cors("http://localhost:3000", "https://app.example.com", "api.example.com")
+	router := New()
+	router.Use(corsMid)
+
+	router.Get("/items", func(c *Context) {
+		c.Text("items-list")
+	})
+
+	handler := router.Handler()
+
+	// A. Preflight OPTIONS request for http://localhost:3000
+	wOpt := httptest.NewRecorder()
+	reqOpt := httptest.NewRequest("OPTIONS", "/items", nil)
+	reqOpt.Header.Set("Origin", "http://localhost:3000")
+	reqOpt.Header.Set("Access-Control-Request-Method", "GET")
+	reqOpt.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
+	handler.ServeHTTP(wOpt, reqOpt)
+
+	if wOpt.Code != http.StatusNoContent {
+		t.Errorf("OPTIONS expected status 204, got %d", wOpt.Code)
+	}
+	if wOpt.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Errorf("OPTIONS expected origin http://localhost:3000, got %s", wOpt.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if wOpt.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Errorf("OPTIONS expected credentials true, got %s", wOpt.Header().Get("Access-Control-Allow-Credentials"))
+	}
+	if wOpt.Header().Get("Access-Control-Allow-Headers") != "Authorization, Content-Type" {
+		t.Errorf("OPTIONS expected requested headers echoed, got %s", wOpt.Header().Get("Access-Control-Allow-Headers"))
+	}
+
+	// B. Regular GET from second allowed origin https://app.example.com
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest("GET", "/items", nil)
+	req2.Header.Set("Origin", "https://app.example.com")
+	handler.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Errorf("GET expected status 200, got %d", w2.Code)
+	}
+	if w2.Header().Get("Access-Control-Allow-Origin") != "https://app.example.com" {
+		t.Errorf("GET expected origin https://app.example.com, got %s", w2.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// C. Regular GET from scheme-less origin api.example.com
+	w3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest("GET", "/items", nil)
+	req3.Header.Set("Origin", "https://api.example.com")
+	handler.ServeHTTP(w3, req3)
+
+	if w3.Header().Get("Access-Control-Allow-Origin") != "https://api.example.com" {
+		t.Errorf("GET expected origin https://api.example.com, got %s", w3.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// D. Request from disallowed origin
+	wDis := httptest.NewRecorder()
+	reqDis := httptest.NewRequest("GET", "/items", nil)
+	reqDis.Header.Set("Origin", "https://malicious.com")
+	handler.ServeHTTP(wDis, reqDis)
+
+	if wDis.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("Expected empty Allow-Origin for disallowed origin, got %s", wDis.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// E. Preflight from disallowed origin should return 403 Forbidden
+	wOptDis := httptest.NewRecorder()
+	reqOptDis := httptest.NewRequest("OPTIONS", "/items", nil)
+	reqOptDis.Header.Set("Origin", "https://malicious.com")
+	handler.ServeHTTP(wOptDis, reqOptDis)
+
+	if wOptDis.Code != http.StatusForbidden {
+		t.Errorf("Disallowed preflight expected 403, got %d", wOptDis.Code)
+	}
+}
+
+func TestCORSWildcard(t *testing.T) {
+	router := New()
+	router.Use(Cors("*"))
+
+	router.Get("/public", func(c *Context) {
+		c.Text("public-content")
+	})
+
+	handler := router.Handler()
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/public", nil)
+	req.Header.Set("Origin", "https://anydomain.org")
+	handler.ServeHTTP(w, req)
+
+	if w.Header().Get("Access-Control-Allow-Origin") != "https://anydomain.org" {
+		t.Errorf("Wildcard CORS expected origin echoed for credentials compatibility, got %s", w.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
